@@ -1,0 +1,102 @@
+name: Release
+
+# 触发：push 形如 v1.2.3 的 tag
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-14
+            args: --target aarch64-apple-darwin
+            name: macos-arm64
+            rust-targets: aarch64-apple-darwin
+          - platform: macos-13
+            args: --target x86_64-apple-darwin
+            name: macos-x64
+            rust-targets: x86_64-apple-darwin
+          - platform: ubuntu-22.04
+            args: ""
+            name: linux-x64
+            rust-targets: x86_64-unknown-linux-gnu
+          - platform: windows-latest
+            args: --target aarch64-pc-windows-msvc
+            name: windows-arm64
+            rust-targets: aarch64-pc-windows-msvc
+          - platform: windows-latest
+            args: --target x86_64-pc-windows-msvc
+            name: windows-x64
+            rust-targets: x86_64-pc-windows-msvc
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+          key: ${{ matrix.name }}
+
+      - name: Install Linux system deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libxdo-dev \
+            libssl-dev \
+            rpm \
+            patchelf \
+            build-essential \
+            curl \
+            wget \
+            file
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Build & Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Windsurf Manager ${{ github.ref_name }}
+          releaseBody: |
+            ## 下载
+
+            - macOS Apple Silicon (M1/M2/M3/M4): `*_aarch64.dmg`
+            - macOS Intel: `*_x64.dmg`
+            - Windows x64: `*_x64-setup.exe` / `*_x64.msi`
+            - Windows ARM64: `*_arm64-setup.exe` / `*_arm64.msi`
+            - Linux: `*.deb` / `*.rpm` / `*.AppImage`
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

@@ -1,0 +1,29 @@
+# 忽略备份文件目录
+/backup/
+*.bak
+venv/
+node_modules/
+target/
+dist/
+src-tauri/gen/
+.idea/
+.vscode/
+.cursor/
+data.json
+
+# macOS 系统文件
+.DS_Store
+**/.DS_Store
+
+# 图标源文件（不提交）
+src-tauri/icons/*.zip
+src-tauri/icons/icons_*/
+src-tauri/icons/*_pack/
+src-tauri/icons/*_pack.zip
+
+# 本地下载/截图/安装器等（不提交）
+/rustup-init.exe
+/1.png
+/2.png
+/3.png
+/4.png

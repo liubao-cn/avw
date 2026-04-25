@@ -97,6 +97,6 @@ jobs:
             - Windows x64: `*_x64-setup.exe` / `*_x64.msi`
             - Windows ARM64: `*_arm64-setup.exe` / `*_arm64.msi`
             - Linux: `*.deb` / `*.rpm` / `*.AppImage`
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

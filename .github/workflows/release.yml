@@ -90,13 +90,46 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: Windsurf Manager ${{ github.ref_name }}
           releaseBody: |
-            ## 下载
+            ## 下载前请先选对架构
 
-            - macOS Apple Silicon (M1/M2/M3/M4): `*_aarch64.dmg`
-            - macOS Intel: `*_x64.dmg`
-            - Windows x64: `*_x64-setup.exe` / `*_x64.msi`
-            - Windows ARM64: `*_arm64-setup.exe` / `*_arm64.msi`
-            - Linux: `*.deb` / `*.rpm` / `*.AppImage`
+            **不同芯片的安装包不通用，下错了会闪退或装不上。** 不确定自己是哪个：
+
+            - **macOS**：苹果菜单 → 关于本机 → 看到 `芯片：Apple…` 选 `aarch64`，看到 `处理器：Intel…` 选 `x64`
+            - **Windows**：设置 → 系统 → 关于 → 系统类型；普通 PC / 笔记本一般选 `x64`
+            - **Linux**：主流 amd64 机器选 `amd64.deb` / `x86_64.rpm` / `amd64.AppImage`
+
+            ## 各平台对应文件
+
+            | 系统 | 安装包 |
+            |------|--------|
+            | macOS Apple Silicon (M1/M2/M3/M4) | `AVW_*_aarch64.dmg` |
+            | macOS Intel | `AVW_*_x64.dmg` |
+            | Windows x64 | `AVW_*_x64-setup.exe` 或 `AVW_*_x64_en-US.msi` |
+            | Windows ARM64 | `AVW_*_arm64-setup.exe` 或 `AVW_*_arm64_en-US.msi` |
+            | Linux Debian / Ubuntu | `AVW_*_amd64.deb` |
+            | Linux Fedora / RHEL | `AVW-*_x86_64.rpm` |
+            | Linux 其它 | `AVW_*_amd64.AppImage` |
+
+            ## macOS 首次启动：去掉隔离标记（必看）
+
+            App 未经过 Apple 公证，首次打开会提示 **"已损坏，无法打开"** 或 **"无法验证开发者"**。把 `.app` 拖进 `应用程序` 后，在「终端」执行一次：
+
+            ```bash
+            sudo xattr -rd com.apple.quarantine /Applications/AVW.app
+            ```
+
+            回车后输入开机密码即可正常打开，**只需执行一次**，后续升级无需再做。
+
+            ## Windows / Linux 提示
+
+            - **Windows**：SmartScreen 拦截时点 `更多信息` → `仍要运行`。
+            - **Linux (.deb)**：`sudo dpkg -i AVW_*_amd64.deb && sudo apt-get install -f`
+            - **Linux (.rpm)**：`sudo dnf install ./AVW-*_x86_64.rpm`
+            - **Linux (.AppImage)**：`chmod +x AVW_*_amd64.AppImage && ./AVW_*_amd64.AppImage`
+
+            ---
+
+            遇到问题或反馈，加作者微信：`_liubao`
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

@@ -14,7 +14,11 @@ export default {
     switchToChinese: '切换到中文',
     updateAvailable: '发现新版本 {version}',
     updateNow: '立即更新',
-    dismissUpdate: '关闭更新提示'
+    dismissUpdate: '关闭更新提示',
+    authorWechat: '作者微信',
+    copyWechat: '复制作者微信号',
+    wechatCopied: '微信号已复制',
+    wechatCopyFailed: '复制失败，请手动复制：{wechat}'
   },
   windsurf: {
     title: 'Windsurf 账号管理',
@@ -50,6 +54,8 @@ export default {
     sessionAddSuccess: '成功导入 {count} 个 Session 账号',
     sessionAddPartial: '导入完成：成功 {success} 个，失败 {fail} 个，跳过 {skipped} 个',
     sessionAddAllFailed: 'Session 导入失败',
+    errorNetwork403: '检测到 403，请关闭魔法后重试一次',
+    errorServerBusy503: '服务器繁忙（503），请稍后重试一下',
     orgPickerTitle: '选择组织',
     orgPickerHint: '该 Token 关联多个组织，请选择一个要绑定的主组织。',
     orgPickerConfirm: '确认组织',

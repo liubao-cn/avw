@@ -808,16 +808,25 @@ const executeAddAuth1 = async () => {
   let failCount = 0
   let skippedCount = 0
 
+  const mapImportError = (reason) => {
+    const raw = String(reason ?? '').trim()
+    if (!raw) return ''
+    if (/\b403\b/.test(raw)) return t('windsurf.errorNetwork403')
+    if (/\b503\b/.test(raw)) return t('windsurf.errorServerBusy503')
+    return raw
+  }
+
   const recordFailure = (label, token, reason) => {
     failCount++
     const masked = token ? `${token.slice(0, 12)}...${token.slice(-4)}` : ''
+    const friendly = mapImportError(reason) || String(reason || '未知错误')
     auth1LastErrors.value.push({
       label: label || masked || '(token)',
       token: masked,
-      reason: String(reason || '未知错误')
+      reason: friendly
     })
     // eslint-disable-next-line no-console
-    console.warn('[windsurf:token-import] add failed', { label, token: masked, reason })
+    console.warn('[windsurf:token-import] add failed', { label, token: masked, reason: String(reason ?? '') })
   }
 
   try {

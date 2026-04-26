@@ -14,7 +14,11 @@ export default {
     switchToChinese: 'Switch to Chinese',
     updateAvailable: 'New version {version} is available',
     updateNow: 'Update now',
-    dismissUpdate: 'Dismiss update notification'
+    dismissUpdate: 'Dismiss update notification',
+    authorWechat: 'Author WeChat',
+    copyWechat: 'Copy author WeChat ID',
+    wechatCopied: 'WeChat ID copied',
+    wechatCopyFailed: 'Copy failed, please copy manually: {wechat}'
   },
   windsurf: {
     title: 'Windsurf Account Manager',
@@ -50,6 +54,8 @@ export default {
     sessionAddSuccess: 'Successfully imported {count} Session accounts',
     sessionAddPartial: 'Import completed: {success} succeeded, {fail} failed, {skipped} skipped',
     sessionAddAllFailed: 'Failed to import Session accounts',
+    errorNetwork403: 'HTTP 403 detected. Please disable VPN/Proxy and retry once.',
+    errorServerBusy503: 'Server is busy (503). Please try again later.',
     orgPickerTitle: 'Select Organization',
     orgPickerHint: 'This token belongs to multiple organizations. Please choose the primary organization to bind.',
     orgPickerConfirm: 'Confirm Organization',

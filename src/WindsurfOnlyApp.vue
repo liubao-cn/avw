@@ -26,7 +26,35 @@
         </button>
       </nav>
 
-      <div class="sidebar-footer"></div>
+      <div class="sidebar-footer">
+        <button
+          type="button"
+          class="author-btn"
+          :class="{ collapsed: sidebarCollapsed, copied: wechatCopyState === 'copied', failed: wechatCopyState === 'failed' }"
+          @click="copyWechat"
+          :title="`${$t('app.authorWechat')}: ${AUTHOR_WECHAT}`"
+          :aria-label="$t('app.copyWechat')"
+        >
+          <span class="author-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+            </svg>
+          </span>
+          <span v-if="!sidebarCollapsed" class="author-text">
+            <span class="author-label">{{ wechatBtnLabel }}</span>
+            <span class="author-id">{{ AUTHOR_WECHAT }}</span>
+          </span>
+          <span v-if="!sidebarCollapsed" class="author-status" aria-hidden="true">
+            <svg v-if="wechatCopyState === 'copied'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+            <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </svg>
+          </span>
+        </button>
+      </div>
     </aside>
 
     <div class="app-main-area">
@@ -99,10 +127,57 @@ import WindsurfAccountList from './components/WindsurfAccountList.vue'
 const { t, locale } = useI18n()
 
 const SIDEBAR_AUTO_COLLAPSE_BREAKPOINT = 960
+const AUTHOR_WECHAT = '_liubao'
 
 const sidebarCollapsed = ref(false)
 const currentLocale = ref(locale.value)
 const updateInfo = ref(null)
+const wechatCopyState = ref('idle')
+let wechatResetTimer = null
+
+const wechatBtnLabel = computed(() => {
+  if (wechatCopyState.value === 'copied') return t('app.wechatCopied')
+  if (wechatCopyState.value === 'failed') return t('app.wechatCopyFailed', { wechat: AUTHOR_WECHAT })
+  return t('app.authorWechat')
+})
+
+const fallbackCopy = (text) => {
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.left = '-9999px'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
+}
+
+const copyWechat = async () => {
+  let ok = false
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(AUTHOR_WECHAT)
+      ok = true
+    } else {
+      ok = fallbackCopy(AUTHOR_WECHAT)
+    }
+  } catch {
+    ok = fallbackCopy(AUTHOR_WECHAT)
+  }
+  wechatCopyState.value = ok ? 'copied' : 'failed'
+  if (wechatResetTimer) clearTimeout(wechatResetTimer)
+  wechatResetTimer = setTimeout(() => {
+    wechatCopyState.value = 'idle'
+    wechatResetTimer = null
+  }, 2000)
+}
 
 const themeManager = inject('themeManager', null)
 const themeStorageKey = themeManager?.storageKey ?? 'avw-theme'
@@ -194,6 +269,10 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', syncSidebarWithViewport)
+  if (wechatResetTimer) {
+    clearTimeout(wechatResetTimer)
+    wechatResetTimer = null
+  }
 })
 </script>
 
@@ -277,6 +356,95 @@ onBeforeUnmount(() => {
   padding: 12px 8px 14px;
   border-top: 1px solid var(--color-divider, #e1e5e9);
   position: relative;
+}
+
+.author-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-divider, #e5e7eb);
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.06);
+  color: var(--color-text-secondary, #6b7280);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.author-btn:hover {
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--color-text-primary, #374151);
+}
+
+.author-btn.copied {
+  background: rgba(16, 185, 129, 0.14);
+  border-color: rgba(16, 185, 129, 0.32);
+  color: #047857;
+}
+
+.author-btn.failed {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #b91c1c;
+}
+
+.author-btn.collapsed {
+  justify-content: center;
+  padding: 8px;
+}
+
+.author-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.author-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.author-label {
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.author-id {
+  font-size: 12px;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--color-text-primary, #374151);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.author-btn.copied .author-id {
+  color: #047857;
+}
+
+.author-btn.failed .author-id {
+  color: #b91c1c;
+}
+
+.author-status {
+  flex-shrink: 0;
+  opacity: 0.55;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.author-btn:hover .author-status,
+.author-btn.copied .author-status {
+  opacity: 1;
 }
 
 .sidebar-account-wrap {
@@ -568,6 +736,41 @@ onBeforeUnmount(() => {
 
 [data-theme='dark'] .sidebar-footer {
   border-color: rgba(148, 163, 184, 0.15);
+}
+
+[data-theme='dark'] .author-btn {
+  background: rgba(96, 165, 250, 0.1);
+  border-color: rgba(148, 163, 184, 0.18);
+  color: #94a3b8;
+}
+
+[data-theme='dark'] .author-btn:hover {
+  background: rgba(96, 165, 250, 0.18);
+  color: #e2e8f0;
+}
+
+[data-theme='dark'] .author-btn.copied {
+  background: rgba(16, 185, 129, 0.18);
+  border-color: rgba(16, 185, 129, 0.42);
+  color: #6ee7b7;
+}
+
+[data-theme='dark'] .author-btn.failed {
+  background: rgba(248, 113, 113, 0.16);
+  border-color: rgba(248, 113, 113, 0.4);
+  color: #fca5a5;
+}
+
+[data-theme='dark'] .author-id {
+  color: #e2e8f0;
+}
+
+[data-theme='dark'] .author-btn.copied .author-id {
+  color: #6ee7b7;
+}
+
+[data-theme='dark'] .author-btn.failed .author-id {
+  color: #fca5a5;
 }
 
 [data-theme='dark'] .sidebar-collapse-btn:hover {

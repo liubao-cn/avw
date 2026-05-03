@@ -154,5 +154,31 @@ export default {
     statusInactive: 'Inactive',
     statusBanned: 'Banned',
     statusUnknown: 'Unknown'
+  },
+  windsurfTarget: {
+    openEntry: 'Windsurf Settings',
+    title: 'Windsurf Client Settings',
+    intro: 'Tell AVW where to find Windsurf when it is installed to a custom location or when you are using Windsurf - Next.',
+    clientTypeLabel: 'Client Type',
+    clientTypeHint: 'Windsurf - Next uses its own URL scheme (windsurf-next://) and a separate user data directory.',
+    clientStandard: 'Windsurf (Standard)',
+    clientNext: 'Windsurf - Next (Preview)',
+    installPathLabel: 'Windsurf Install Directory (optional)',
+    installPathPlaceholder: 'e.g. /Applications/Windsurf.app or D:\\Program\\Windsurf',
+    installPathHint: 'Used for future patching and path validation. OAuth login uses the OS protocol and does not depend on this path; leave empty to auto-detect.',
+    userDataDirLabel: 'User Data Directory (optional)',
+    userDataDirPlaceholder: 'e.g. /Users/you/MyWindsurfData',
+    userDataDirHint: 'Fill this if you launched Windsurf with --user-data-dir, portable mode, or any custom user data directory. AVW uses it to locate storage.json for machine-ID reset. Leave empty to use the system default.',
+    detect: 'Auto Detect',
+    detecting: 'Detecting...',
+    detected: 'Windsurf install path auto-detected',
+    notFound: 'Windsurf was not found in any common location. Please fill it in manually or confirm the installation.',
+    validate: 'Validate',
+    validating: 'Validating...',
+    valid: 'Path is valid (extension.js found)',
+    invalid: 'Path is invalid: extension.js not found under that directory',
+    resetDefaults: 'Reset to Defaults',
+    save: 'Save',
+    saved: 'Saved. Will take effect on next login.'
   }
 }

@@ -337,6 +337,7 @@ import { useI18n } from 'vue-i18n'
 import WindsurfAccountCard from './WindsurfAccountCard.vue'
 import WindsurfAnalyticsDialog from './WindsurfAnalyticsDialog.vue'
 import { useEscToClose } from '../composables/useEscToClose'
+import { buildInvokeTarget } from '../composables/windsurfTarget'
 
 const props = defineProps({
   embedded: {
@@ -1153,6 +1154,7 @@ const handleSwitchAccount = async (account) => {
       return
     }
 
+    const windsurfTarget = buildInvokeTarget()
     const resp = await invoke('windsurf_switch_account', {
       authToken: account.auth_token,
       auth_token: account.auth_token,
@@ -1161,7 +1163,9 @@ const handleSwitchAccount = async (account) => {
       devinAccountId: account.devin_account_id || null,
       devin_account_id: account.devin_account_id || null,
       devinPrimaryOrgId: account.devin_primary_org_id || null,
-      devin_primary_org_id: account.devin_primary_org_id || null
+      devin_primary_org_id: account.devin_primary_org_id || null,
+      windsurfTarget,
+      windsurf_target: windsurfTarget
     })
 
     if (!resp || !resp.success) {
@@ -2116,5 +2120,212 @@ onUnmounted(() => {
   color: #b91c1c;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* ============================== */
+/*  暗色主题统一覆盖：           */
+/*  避免借用的 --card-bg / --primary-color 等未定义变量导致白底   */
+/* ============================== */
+
+[data-theme='dark'] .modal-content,
+[data-theme='dark'] .import-dialog,
+[data-theme='dark'] .batch-delete-dialog,
+[data-theme='dark'] .embedded-panel {
+  background: var(--color-surface, #1e293b);
+  color: var(--color-text-primary, #e2e8f0);
+  border-color: var(--color-border, rgba(148, 163, 184, 0.25));
+  box-shadow: var(--color-shadow-modal, 0 20px 40px rgba(0, 0, 0, 0.55));
+}
+
+[data-theme='dark'] .modal-header,
+[data-theme='dark'] .dialog-header,
+[data-theme='dark'] .dialog-footer {
+  border-color: rgba(148, 163, 184, 0.2);
+}
+
+[data-theme='dark'] .close-btn,
+[data-theme='dark'] .dialog-close {
+  color: var(--color-text-secondary, #cbd5f5);
+}
+
+[data-theme='dark'] .close-btn:hover,
+[data-theme='dark'] .dialog-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme='dark'] .spinner {
+  border-color: rgba(148, 163, 184, 0.25);
+  border-top-color: var(--color-btn-primary-bg, #60a5fa);
+}
+
+[data-theme='dark'] .sort-btn {
+  background: rgba(148, 163, 184, 0.16);
+  color: var(--color-text-primary, #e2e8f0);
+}
+
+[data-theme='dark'] .sort-btn:hover {
+  background: rgba(148, 163, 184, 0.24);
+}
+
+[data-theme='dark'] .sort-menu {
+  background: var(--color-surface, #1e293b);
+  border-color: rgba(148, 163, 184, 0.24);
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.55);
+  color: var(--color-text-primary, #e2e8f0);
+}
+
+[data-theme='dark'] .sort-option:hover {
+  background: rgba(148, 163, 184, 0.14);
+}
+
+[data-theme='dark'] .sort-option.active {
+  background: rgba(96, 165, 250, 0.18);
+  color: #93c5fd;
+}
+
+[data-theme='dark'] .sort-divider {
+  background: rgba(148, 163, 184, 0.2);
+}
+
+[data-theme='dark'] .check-icon {
+  color: #93c5fd;
+}
+
+[data-theme='dark'] .search-input {
+  color: var(--color-text-primary, #e2e8f0);
+  background: transparent;
+}
+
+[data-theme='dark'] .search-input::placeholder {
+  color: var(--color-input-placeholder, #64748b);
+}
+
+[data-theme='dark'] .import-textarea {
+  background: var(--color-input-bg, rgba(15, 23, 42, 0.85));
+  border-color: var(--color-input-border, rgba(148, 163, 184, 0.35));
+  color: var(--color-text-primary, #e2e8f0);
+}
+
+[data-theme='dark'] .import-textarea::placeholder {
+  color: var(--color-input-placeholder, #64748b);
+}
+
+[data-theme='dark'] .btn-cancel {
+  border-color: rgba(148, 163, 184, 0.35);
+  color: var(--color-text-primary, #e2e8f0);
+}
+
+[data-theme='dark'] .btn-cancel:hover {
+  background: rgba(148, 163, 184, 0.12);
+}
+
+[data-theme='dark'] .btn-confirm {
+  background: var(--color-btn-primary-bg, #6366f1);
+  color: var(--color-btn-primary-text, #f9fafb);
+}
+
+[data-theme='dark'] .btn-confirm:hover:not(:disabled) {
+  background: var(--color-btn-primary-bg-hover, #818cf8);
+}
+
+[data-theme='dark'] .dialog-message {
+  color: var(--color-text-secondary, #94a3b8);
+}
+
+[data-theme='dark'] .mode-tab {
+  border-color: rgba(148, 163, 184, 0.28);
+  color: var(--color-text-secondary, #cbd5f5);
+}
+
+[data-theme='dark'] .mode-tab:hover:not(.active) {
+  background: rgba(148, 163, 184, 0.12);
+}
+
+[data-theme='dark'] .mode-tab.active {
+  background: var(--color-btn-primary-bg, #6366f1);
+  color: var(--color-btn-primary-text, #f9fafb);
+}
+
+[data-theme='dark'] .condition-item,
+[data-theme='dark'] .delete-stats {
+  background: rgba(148, 163, 184, 0.1);
+  color: var(--color-text-primary, #e2e8f0);
+}
+
+[data-theme='dark'] .condition-item:hover {
+  background: rgba(148, 163, 184, 0.16);
+}
+
+[data-theme='dark'] .condition-count,
+[data-theme='dark'] .stat-label {
+  color: var(--color-text-muted, #94a3b8);
+}
+
+[data-theme='dark'] .select-btn {
+  border-color: rgba(148, 163, 184, 0.28);
+  color: var(--color-text-primary, #e2e8f0);
+}
+
+[data-theme='dark'] .select-btn:hover {
+  background: rgba(148, 163, 184, 0.14);
+}
+
+[data-theme='dark'] .manual-list {
+  border-color: rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.35);
+}
+
+[data-theme='dark'] .manual-item {
+  border-bottom-color: rgba(148, 163, 184, 0.14);
+  color: var(--color-text-primary, #e2e8f0);
+}
+
+[data-theme='dark'] .manual-item:hover {
+  background: rgba(148, 163, 184, 0.1);
+}
+
+[data-theme='dark'] .org-item {
+  border-color: rgba(148, 163, 184, 0.22);
+  background: rgba(148, 163, 184, 0.08);
+}
+
+[data-theme='dark'] .org-item:hover {
+  border-color: rgba(96, 165, 250, 0.5);
+  background: rgba(96, 165, 250, 0.12);
+}
+
+[data-theme='dark'] .org-item .org-name {
+  color: var(--color-text-primary, #e2e8f0);
+}
+
+[data-theme='dark'] .org-item .org-id {
+  color: var(--color-text-muted, #94a3b8);
+}
+
+[data-theme='dark'] .auth1-error-list {
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+[data-theme='dark'] .auth1-error-title,
+[data-theme='dark'] .auth1-error-reason {
+  color: #fca5a5;
+}
+
+[data-theme='dark'] .auth1-error-label {
+  color: var(--color-text-primary, #e2e8f0);
+}
+
+[data-theme='dark'] .auth1-error-token {
+  color: var(--color-text-muted, #94a3b8);
+}
+
+[data-theme='dark'] .auth1-error-item {
+  border-top-color: rgba(248, 113, 113, 0.28);
+}
+
+[data-theme='dark'] .modal-overlay,
+[data-theme='dark'] .import-overlay {
+  background: rgba(0, 0, 0, 0.68);
 }
 </style>

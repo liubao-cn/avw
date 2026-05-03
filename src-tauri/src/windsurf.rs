@@ -392,9 +392,16 @@ async fn windsurf_get_one_time_auth_token(auth: &WindsurfAuth) -> Result<String,
         .ok_or_else(|| "解析 GetOneTimeAuthToken 响应失败：未找到 auth_token 字段".to_string())
 }
 
-/// 构造 `windsurf://codeium.windsurf#access_token=...&state=...&token_type=Bearer`
+/// 构造 `<scheme>://codeium.windsurf#access_token=...&state=...&token_type=Bearer`
 /// 并通过系统默认程序打开，触发 Windsurf 桌面客户端 OAuth 回调登录。
-fn open_windsurf_callback_url(one_time_token: &str) -> Result<String, String> {
+///
+/// `target` 决定使用哪个 URL scheme：
+/// - `windsurf` → `windsurf://`
+/// - `windsurf-next` → `windsurf-next://`
+fn open_windsurf_callback_url(
+    one_time_token: &str,
+    target: &WindsurfTarget,
+) -> Result<String, String> {
     let state = Uuid::new_v4().to_string();
     // fragment 用 URL encode，避免 token 里的特殊字符破坏 URL
     let fragment = format!(
@@ -402,7 +409,7 @@ fn open_windsurf_callback_url(one_time_token: &str) -> Result<String, String> {
         urlencoding::encode(one_time_token),
         urlencoding::encode(&state)
     );
-    let callback_url = format!("windsurf://codeium.windsurf#{}", fragment);
+    let callback_url = format!("{}://codeium.windsurf#{}", target.url_scheme(), fragment);
 
     #[cfg(target_os = "macos")]
     {
@@ -2582,43 +2589,240 @@ fn generate_random_hex(byte_len: usize) -> String {
     hex::encode(bytes)
 }
 
-fn windsurf_storage_json_path() -> Result<PathBuf, String> {
+// ==================== Windsurf 客户端目标（客户端类型 / 自定义安装路径 / 自定义用户数据目录） ====================
+
+/// 前端可选传入的 Windsurf 客户端定位信息。
+///
+/// 所有字段均可省略：
+/// - `client_type` 缺省等价于 `"windsurf"`（标准版），合法值为 `"windsurf"` / `"windsurf-next"`；
+/// - `install_path` 用于补丁 / 路径识别（当前未直接用于 OAuth 登录）；
+/// - `user_data_dir` 用于覆盖 `storage.json` 所在的用户数据根目录，便于支持
+///   便携模式 / `--user-data-dir` 等自定义场景。
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindsurfTarget {
+    #[serde(default)]
+    pub client_type: Option<String>,
+    /// 仅为将来补丁 / 路径识别场景预留；当前 OAuth 登录流程不直接使用此字段。
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub install_path: Option<String>,
+    #[serde(default)]
+    pub user_data_dir: Option<String>,
+}
+
+impl WindsurfTarget {
+    /// 规范化客户端类型字符串，未知值归并为 `"windsurf"`。
+    fn normalized_client_type(&self) -> &str {
+        match self.client_type.as_deref().map(str::trim) {
+            Some("windsurf-next") => "windsurf-next",
+            _ => "windsurf",
+        }
+    }
+
+    /// 对应 OAuth 回调使用的 URL scheme。
+    fn url_scheme(&self) -> &'static str {
+        match self.normalized_client_type() {
+            "windsurf-next" => "windsurf-next",
+            _ => "windsurf",
+        }
+    }
+
+    /// 默认用户数据目录名（`%APPDATA%` / `~/Library/Application Support` / `$XDG_CONFIG_HOME` 下的子目录名）。
+    fn data_dir_name(&self) -> &'static str {
+        match self.normalized_client_type() {
+            "windsurf-next" => "Windsurf - Next",
+            _ => "Windsurf",
+        }
+    }
+}
+
+/// 解析用户数据目录：优先使用显式传入的 `user_data_dir`，否则按 OS + 客户端类型拼默认位置。
+fn resolve_windsurf_user_data_dir(target: &WindsurfTarget) -> Result<PathBuf, String> {
+    if let Some(custom) = target
+        .user_data_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Ok(PathBuf::from(custom));
+    }
+
+    let name = target.data_dir_name();
+
     #[cfg(target_os = "windows")]
     {
         let base = dirs::data_dir().ok_or("无法获取系统数据目录")?;
-        Ok(base
-            .join("Windsurf")
-            .join("User")
-            .join("globalStorage")
-            .join("storage.json"))
+        Ok(base.join(name))
     }
 
     #[cfg(target_os = "macos")]
     {
         let home = dirs::home_dir().ok_or("无法获取用户目录")?;
-        Ok(home
-            .join("Library")
-            .join("Application Support")
-            .join("Windsurf")
-            .join("User")
-            .join("globalStorage")
-            .join("storage.json"))
+        Ok(home.join("Library").join("Application Support").join(name))
     }
 
     #[cfg(target_os = "linux")]
     {
         let base = dirs::config_dir().ok_or("无法获取系统配置目录")?;
-        Ok(base
-            .join("Windsurf")
-            .join("User")
-            .join("globalStorage")
-            .join("storage.json"))
+        Ok(base.join(name))
     }
 }
 
+/// 解析 `storage.json`（机器 ID 重置写入目标）路径。
+fn resolve_storage_json_path(target: &WindsurfTarget) -> Result<PathBuf, String> {
+    Ok(resolve_windsurf_user_data_dir(target)?
+        .join("User")
+        .join("globalStorage")
+        .join("storage.json"))
+}
+
+/// Windsurf 安装目录内 `extension.js` 的相对路径。
+/// 通过它的存在性来判定某个目录是否确实是 Windsurf 安装目录。
+fn extension_js_relative_path() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        PathBuf::from("Contents")
+            .join("Resources")
+            .join("app")
+            .join("extensions")
+            .join("windsurf")
+            .join("dist")
+            .join("extension.js")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        PathBuf::from("resources")
+            .join("app")
+            .join("extensions")
+            .join("windsurf")
+            .join("dist")
+            .join("extension.js")
+    }
+}
+
+/// 通过 `extension.js` 存在性校验某路径是否为有效 Windsurf 安装目录。
+fn is_valid_windsurf_install_dir(path: &PathBuf) -> bool {
+    path.join(extension_js_relative_path()).exists()
+}
+
+/// 在 Windows 上通过 PowerShell COM 调用解析 `.lnk` 快捷方式的 TargetPath。
+#[cfg(target_os = "windows")]
+fn resolve_lnk_target(lnk_path: &PathBuf) -> Option<PathBuf> {
+    let script = format!(
+        "$sh = New-Object -ComObject WScript.Shell; $sh.CreateShortcut('{}').TargetPath",
+        lnk_path.display()
+    );
+    let out = command_hidden("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let target = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if target.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(target))
+    }
+}
+
+/// 按常见路径探测指定客户端类型的 Windsurf 安装目录。命中即返回。
+fn detect_windsurf_install_path_impl(client_type: &str) -> Option<String> {
+    let target = WindsurfTarget {
+        client_type: Some(client_type.to_string()),
+        ..Default::default()
+    };
+    let dir_name = target.data_dir_name(); // "Windsurf" / "Windsurf - Next"
+
+    #[cfg(target_os = "windows")]
+    {
+        // 1) 开始菜单快捷方式 → TargetPath → parent
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let start_menu = PathBuf::from(appdata)
+                .join("Microsoft")
+                .join("Windows")
+                .join("Start Menu")
+                .join("Programs")
+                .join(dir_name);
+            if let Ok(entries) = fs::read_dir(&start_menu) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|s| s.to_str()) == Some("lnk") {
+                        if let Some(exe) = resolve_lnk_target(&path) {
+                            if let Some(parent) = exe.parent() {
+                                let root = parent.to_path_buf();
+                                if is_valid_windsurf_install_dir(&root) {
+                                    return Some(root.to_string_lossy().to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2) 常见安装路径
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            candidates.push(PathBuf::from(local).join("Programs").join(dir_name));
+        }
+        candidates.push(PathBuf::from("C:\\Program Files").join(dir_name));
+        candidates.push(PathBuf::from("C:\\Program Files (x86)").join(dir_name));
+
+        for c in candidates {
+            if is_valid_windsurf_install_dir(&c) {
+                return Some(c.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let app_name = format!("{}.app", dir_name);
+        let mut candidates: Vec<PathBuf> =
+            vec![PathBuf::from("/Applications").join(&app_name)];
+        if let Some(home) = dirs::home_dir() {
+            candidates.push(home.join("Applications").join(&app_name));
+        }
+        for c in candidates {
+            if is_valid_windsurf_install_dir(&c) {
+                return Some(c.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let mut candidates: Vec<PathBuf> = vec![
+            PathBuf::from("/opt").join(dir_name),
+            PathBuf::from("/usr/share").join(dir_name.to_lowercase()),
+        ];
+        if let Some(home) = dirs::home_dir() {
+            candidates.push(home.join(".local").join("share").join(dir_name));
+        }
+        for c in candidates {
+            if is_valid_windsurf_install_dir(&c) {
+                return Some(c.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    None
+}
+
+/// 重置 Windsurf 的 `telemetry.machineId` / `sqmId` / `devDeviceId` / `macMachineId`。
+///
+/// `windsurf_target` 可选：指定客户端类型（标准版 / Next）与自定义用户数据目录，
+/// 覆盖默认的 `~/Library/Application Support/Windsurf/...` 等路径，用于支持便携模式
+/// 或 `--user-data-dir` 启动。
 #[tauri::command]
-pub async fn reset_windsurf_machine_id() -> Result<ResetWindsurfMachineIdResponse, String> {
-    let storage_path = windsurf_storage_json_path()?;
+pub async fn reset_windsurf_machine_id(
+    windsurf_target: Option<WindsurfTarget>,
+) -> Result<ResetWindsurfMachineIdResponse, String> {
+    let target = windsurf_target.unwrap_or_default();
+    let storage_path = resolve_storage_json_path(&target)?;
 
     let fail = |msg: String| ResetWindsurfMachineIdResponse {
         success: false,
@@ -2634,7 +2838,10 @@ pub async fn reset_windsurf_machine_id() -> Result<ResetWindsurfMachineIdRespons
         .ok_or_else(|| "无法解析 storage.json 目录".to_string())?;
 
     if !parent.exists() {
-        return Ok(fail("Windsurf 目录不存在，请确认已安装并至少启动过一次".to_string()));
+        return Ok(fail(format!(
+            "Windsurf 用户数据目录不存在，请确认已安装并至少启动过一次，或在设置中指定正确的用户数据目录: {}",
+            parent.display()
+        )));
     }
 
     let mut storage: serde_json::Map<String, serde_json::Value> = if storage_path.exists() {
@@ -3050,6 +3257,7 @@ pub async fn windsurf_switch_account(
     _refresh_token: Option<String>,
     devin_account_id: Option<String>,
     devin_primary_org_id: Option<String>,
+    windsurf_target: Option<WindsurfTarget>,
 ) -> Result<WindsurfSwitchAccountResult, String> {
     let trimmed = auth_token.trim();
     if trimmed.is_empty() {
@@ -3068,7 +3276,9 @@ pub async fn windsurf_switch_account(
         });
     }
 
-    let reset_result = reset_windsurf_machine_id().await?;
+    let target = windsurf_target.unwrap_or_default();
+
+    let reset_result = reset_windsurf_machine_id(Some(target.clone())).await?;
     let machine_id_reset = reset_result.success;
     let machine_id_reset_error = if reset_result.success {
         None
@@ -3077,14 +3287,24 @@ pub async fn windsurf_switch_account(
     };
 
     if trimmed.starts_with("auth1_") {
-        let mut result =
-            switch_account_via_auth1(trimmed, devin_account_id, devin_primary_org_id).await?;
+        let mut result = switch_account_via_auth1(
+            trimmed,
+            devin_account_id,
+            devin_primary_org_id,
+            &target,
+        )
+        .await?;
         result.machine_id_reset = Some(machine_id_reset);
         result.machine_id_reset_error = machine_id_reset_error;
         Ok(result)
     } else {
-        let mut result =
-            switch_account_via_session(trimmed, devin_account_id, devin_primary_org_id).await?;
+        let mut result = switch_account_via_session(
+            trimmed,
+            devin_account_id,
+            devin_primary_org_id,
+            &target,
+        )
+        .await?;
         result.machine_id_reset = Some(machine_id_reset);
         result.machine_id_reset_error = machine_id_reset_error;
         Ok(result)
@@ -3095,6 +3315,7 @@ async fn switch_account_via_session(
     session_token: &str,
     devin_account_id_hint: Option<String>,
     devin_primary_org_id_hint: Option<String>,
+    target: &WindsurfTarget,
 ) -> Result<WindsurfSwitchAccountResult, String> {
     let auth = WindsurfAuth {
         token: session_token.to_string(),
@@ -3119,7 +3340,7 @@ async fn switch_account_via_session(
         }
     };
 
-    let callback_url = match open_windsurf_callback_url(&one_time_token) {
+    let callback_url = match open_windsurf_callback_url(&one_time_token, target) {
         Ok(url) => url,
         Err(e) => {
             return Ok(WindsurfSwitchAccountResult {
@@ -3154,6 +3375,7 @@ async fn switch_account_via_auth1(
     auth1_token: &str,
     devin_account_id_hint: Option<String>,
     devin_primary_org_id_hint: Option<String>,
+    target: &WindsurfTarget,
 ) -> Result<WindsurfSwitchAccountResult, String> {
     // Step 1: WindsurfPostAuth 换 session_token
     let primary_org_hint = devin_primary_org_id_hint
@@ -3214,8 +3436,8 @@ async fn switch_account_via_auth1(
         }
     };
 
-    // Step 3: 打开 windsurf:// URL
-    let callback_url = match open_windsurf_callback_url(&one_time_token) {
+    // Step 3: 打开 <scheme>:// URL
+    let callback_url = match open_windsurf_callback_url(&one_time_token, target) {
         Ok(url) => url,
         Err(e) => {
             return Ok(WindsurfSwitchAccountResult {
@@ -3245,3 +3467,32 @@ async fn switch_account_via_auth1(
     })
 }
 
+// ==================== Windsurf 安装路径探测 / 校验 Tauri 命令 ====================
+
+/// 探测指定客户端类型的 Windsurf 安装路径。
+///
+/// 参数：
+/// - `client_type`：`"windsurf"` / `"windsurf-next"`，省略视为 `"windsurf"`。
+///
+/// 返回：
+/// - 命中 → `Some(<绝对路径>)`，路径满足 `<path>/.../extension.js` 存在；
+/// - 未命中 → `None`，前端应引导用户手动指定。
+#[tauri::command]
+pub fn detect_windsurf_install_path(client_type: Option<String>) -> Option<String> {
+    let ct = client_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("windsurf");
+    detect_windsurf_install_path_impl(ct)
+}
+
+/// 校验用户输入的 Windsurf 安装路径是否有效（是否包含 `extension.js`）。
+#[tauri::command]
+pub fn validate_windsurf_install_path(path: String) -> bool {
+    let path = path.trim();
+    if path.is_empty() {
+        return false;
+    }
+    is_valid_windsurf_install_dir(&PathBuf::from(path))
+}

@@ -662,4 +662,123 @@ const copyEmail = async () => {
     background-position: 200% 50%;
   }
 }
+
+/* ============================== */
+/*  暗色主题统一覆盖               */
+/* ============================== */
+
+[data-theme='dark'] .account-card {
+  background: var(--color-surface, #1e293b);
+  border-color: rgba(148, 163, 184, 0.2);
+  color: var(--color-text-primary, #e2e8f0);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+[data-theme='dark'] .account-card:hover {
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+}
+
+[data-theme='dark'] .email-text {
+  color: var(--color-text-strong, #f8fafc);
+}
+
+[data-theme='dark'] .copy-btn {
+  background: rgba(148, 163, 184, 0.14);
+  color: var(--color-text-secondary, #cbd5f5);
+}
+
+[data-theme='dark'] .copy-btn:hover {
+  background: rgba(148, 163, 184, 0.22);
+  color: var(--color-text-strong, #f8fafc);
+}
+
+[data-theme='dark'] .name-row {
+  color: var(--color-text-muted, #94a3b8);
+}
+
+[data-theme='dark'] .meta-label {
+  color: var(--color-text-muted, #94a3b8);
+}
+
+[data-theme='dark'] .meta-value {
+  color: var(--color-text-primary, #e2e8f0);
+}
+
+[data-theme='dark'] .quota-section {
+  border-top-color: rgba(148, 163, 184, 0.18);
+}
+
+[data-theme='dark'] .quota-label {
+  color: var(--color-text-muted, #94a3b8);
+}
+
+[data-theme='dark'] .plan-name {
+  background: rgba(96, 165, 250, 0.18);
+  color: #93c5fd;
+}
+
+[data-theme='dark'] .sub-quota-item {
+  background: rgba(148, 163, 184, 0.08);
+  border-color: rgba(148, 163, 184, 0.18);
+}
+
+[data-theme='dark'] .sub-quota-title {
+  color: var(--color-text-secondary, #cbd5f5);
+}
+
+[data-theme='dark'] .sub-quota-bar-bg {
+  background: rgba(148, 163, 184, 0.2);
+}
+
+[data-theme='dark'] .sub-quota-reset {
+  color: var(--color-text-muted, #94a3b8);
+}
+
+[data-theme='dark'] .credits-updated {
+  color: var(--color-text-muted, #94a3b8);
+}
+
+[data-theme='dark'] .btn.secondary {
+  background: rgba(148, 163, 184, 0.16);
+  color: var(--color-text-primary, #e2e8f0);
+}
+
+[data-theme='dark'] .btn.secondary:hover {
+  background: rgba(148, 163, 184, 0.26);
+}
+
+[data-theme='dark'] .meta-chip.cloud-sync {
+  background: rgba(96, 165, 250, 0.2);
+  color: #93c5fd;
+}
+
+[data-theme='dark'] .meta-chip.user {
+  background: rgba(45, 212, 191, 0.18);
+  color: #5eead4;
+}
+
+[data-theme='dark'] .meta-chip.sold {
+  background: rgba(250, 204, 21, 0.18);
+  color: #fde68a;
+}
+
+[data-theme='dark'] .status-chip.ok {
+  background: rgba(45, 212, 191, 0.18);
+  color: #5eead4;
+}
+
+[data-theme='dark'] .status-chip.warn {
+  background: rgba(250, 204, 21, 0.18);
+  color: #fde68a;
+}
+
+[data-theme='dark'] .status-chip.bad {
+  background: rgba(248, 113, 113, 0.2);
+  color: #fca5a5;
+}
+
+[data-theme='dark'] .status-chip.neutral {
+  background: rgba(148, 163, 184, 0.2);
+  color: var(--color-text-primary, #e2e8f0);
+}
 </style>

@@ -82,6 +82,18 @@
       <div class="fixed-controls">
         <button
           type="button"
+          class="control-btn windsurf-target-toggle"
+          @click="openWindsurfTargetDialog"
+          :aria-label="$t('windsurfTarget.openEntry')"
+          :title="$t('windsurfTarget.openEntry')"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+        <button
+          type="button"
           class="control-btn language-toggle"
           @click="toggleLanguage"
           :aria-label="languageToggleLabel"
@@ -114,6 +126,8 @@
         </button>
       </div>
 
+      <WindsurfTargetDialog v-model:visible="showWindsurfTargetDialog" />
+
     </div>
   </div>
 </template>
@@ -123,6 +137,7 @@ import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useI18n } from 'vue-i18n'
 import WindsurfAccountList from './components/WindsurfAccountList.vue'
+import WindsurfTargetDialog from './components/WindsurfTargetDialog.vue'
 
 const { t, locale } = useI18n()
 
@@ -132,7 +147,12 @@ const AUTHOR_WECHAT = '_liubao'
 const sidebarCollapsed = ref(false)
 const currentLocale = ref(locale.value)
 const updateInfo = ref(null)
+const showWindsurfTargetDialog = ref(false)
 const wechatCopyState = ref('idle')
+
+const openWindsurfTargetDialog = () => {
+  showWindsurfTargetDialog.value = true
+}
 let wechatResetTimer = null
 
 const wechatBtnLabel = computed(() => {

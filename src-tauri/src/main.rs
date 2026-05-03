@@ -33,6 +33,9 @@ fn main() {
             windsurf::windsurf_add_account_by_auth1_token,
             windsurf::windsurf_add_account_by_session_token,
             windsurf::windsurf_get_analytics,
+            // Windsurf 安装路径识别：支持自定义安装位置 / Windsurf - Next
+            windsurf::detect_windsurf_install_path,
+            windsurf::validate_windsurf_install_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

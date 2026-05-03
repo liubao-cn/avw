@@ -154,5 +154,31 @@ export default {
     statusInactive: '停用',
     statusBanned: '封禁',
     statusUnknown: '未知'
+  },
+  windsurfTarget: {
+    openEntry: 'Windsurf 设置',
+    title: 'Windsurf 客户端设置',
+    intro: '当 Windsurf 安装到非默认位置，或者用的是 Windsurf - Next 时，可以在这里告诉 AVW 去哪儿找它。',
+    clientTypeLabel: '客户端类型',
+    clientTypeHint: 'Windsurf - Next 使用独立的 URL scheme（windsurf-next://）和独立的用户数据目录。',
+    clientStandard: 'Windsurf 标准版',
+    clientNext: 'Windsurf - Next（预览版）',
+    installPathLabel: 'Windsurf 安装目录（可选）',
+    installPathPlaceholder: '例如 /Applications/Windsurf.app 或 D:\\Program\\Windsurf',
+    installPathHint: '用于后续补丁/路径校验，留空则自动识别常见位置。OAuth 登录由系统协议处理，不依赖此路径。',
+    userDataDirLabel: '用户数据目录（可选）',
+    userDataDirPlaceholder: '例如 /Users/you/MyWindsurfData',
+    userDataDirHint: '如果你用了 --user-data-dir、便携模式或自定义过数据目录，就在这里填，会用来定位 storage.json 做机器 ID 重置。留空则按系统默认。',
+    detect: '自动检测',
+    detecting: '检测中...',
+    detected: '已自动检测到 Windsurf 安装路径',
+    notFound: '未能在常见位置找到 Windsurf，请手动填写或确认已安装',
+    validate: '校验',
+    validating: '校验中...',
+    valid: '路径有效（已找到 extension.js）',
+    invalid: '路径无效，未在该路径下找到 extension.js',
+    resetDefaults: '恢复默认',
+    save: '保存',
+    saved: '已保存，下次登录生效'
   }
 }

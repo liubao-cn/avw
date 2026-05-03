@@ -90,6 +90,12 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: Windsurf Manager ${{ github.ref_name }}
           releaseBody: |
+            ## 本次更新亮点
+
+            - **支持 Windsurf - Next 预览版**：在右下角 ⚙ Windsurf 设置里切换客户端类型，登录会自动走 `windsurf-next://` 协议 + Next 专属用户数据目录。
+            - **自定义 Windsurf 安装路径**：Windsurf 装到非默认位置时，可在设置里手动填写或点"自动检测"，支持 macOS / Windows（含开始菜单快捷方式解析）/ Linux 常见位置。
+            - **自定义用户数据目录**：支持便携模式或用 `--user-data-dir` 启动 Windsurf 的场景，机器 ID 重置会正确命中你指定的 `storage.json`。
+
             ## 下载前请先选对架构
 
             **不同芯片的安装包不通用，下错了会闪退或装不上。** 不确定自己是哪个：

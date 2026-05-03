@@ -179,6 +179,27 @@ export default {
     invalid: '路径无效，未在该路径下找到 extension.js',
     resetDefaults: '恢复默认',
     save: '保存',
-    saved: '已保存，下次登录生效'
+    saved: '已保存，下次登录生效',
+    patch: {
+      title: '无感切号补丁',
+      intro: '修改 Windsurf 内置的 OAuth 回调代码，账号切换无需用户在 Windsurf 中点确认，且不再受 180 秒超时限制。',
+      statusLabel: '当前状态：',
+      statusEnabled: '已启用',
+      statusEnabledLegacy: '已启用（旧版本，可点"启用"升级）',
+      statusDisabled: '未启用',
+      statusUnknown: '未检测',
+      checkBtn: '检查状态',
+      checking: '检测中...',
+      applyBtn: '启用无感切号',
+      applying: '正在应用...',
+      restoreBtn: '还原（关闭无感切号）',
+      restoring: '正在还原...',
+      flagOauth: 'OAuth 回调处理：接受任意 windsurf:// 回调里的 access_token',
+      flagTimeout: '已移除 180 秒 OAuth 超时限制',
+      flagPrompt: '已跳过"是否使用其他账号登录"确认弹窗',
+      applySuccess: '补丁已应用',
+      restoreSuccess: '已还原到原始 extension.js',
+      warning: '会修改 Windsurf 安装目录下的 extension.js。修改前会自动备份原文件（最多保留 3 份），可一键还原；首次使用建议先在"安装目录"里检测路径。'
+    }
   }
 }

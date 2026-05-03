@@ -82,6 +82,82 @@
               <p class="target-hint">{{ $t('windsurfTarget.userDataDirHint') }}</p>
             </div>
 
+            <div class="patch-section">
+              <h4 class="patch-section-title">{{ $t('windsurfTarget.patch.title') }}</h4>
+              <p class="target-hint patch-intro">{{ $t('windsurfTarget.patch.intro') }}</p>
+
+              <div class="patch-status-row">
+                <span class="patch-status-label">{{ $t('windsurfTarget.patch.statusLabel') }}</span>
+                <span
+                  class="patch-status-pill"
+                  :class="{
+                    enabled: patchStatusInstalled,
+                    disabled: patchStatusFetched && !patchStatusInstalled,
+                    unknown: !patchStatusFetched && !patchChecking,
+                    checking: patchChecking,
+                  }"
+                >
+                  <span v-if="patchChecking" class="sync-spinner"></span>
+                  <span class="patch-status-text">{{ patchStatusPillText }}</span>
+                </span>
+              </div>
+
+              <ul v-if="patchStatusFetched" class="patch-detail-list">
+                <li :class="{ 'patch-flag-ok': patchStatus.oauth_handler, 'patch-flag-pending': !patchStatus.oauth_handler }">
+                  <span class="patch-flag-marker">{{ patchStatus.oauth_handler ? '✓' : '○' }}</span>
+                  {{ $t('windsurfTarget.patch.flagOauth') }}
+                </li>
+                <li :class="{ 'patch-flag-ok': patchStatus.timeout_removed, 'patch-flag-pending': !patchStatus.timeout_removed }">
+                  <span class="patch-flag-marker">{{ patchStatus.timeout_removed ? '✓' : '○' }}</span>
+                  {{ $t('windsurfTarget.patch.flagTimeout') }}
+                </li>
+                <li :class="{ 'patch-flag-ok': patchStatus.prompt_bypass, 'patch-flag-pending': !patchStatus.prompt_bypass }">
+                  <span class="patch-flag-marker">{{ patchStatus.prompt_bypass ? '✓' : '○' }}</span>
+                  {{ $t('windsurfTarget.patch.flagPrompt') }}
+                </li>
+              </ul>
+
+              <div class="patch-action-row">
+                <button
+                  type="button"
+                  class="target-btn"
+                  :disabled="patchBusy"
+                  @click="handleCheckPatchStatus"
+                >
+                  <span v-if="patchChecking" class="sync-spinner"></span>
+                  {{ patchChecking ? $t('windsurfTarget.patch.checking') : $t('windsurfTarget.patch.checkBtn') }}
+                </button>
+                <button
+                  type="button"
+                  class="target-btn patch-btn-apply"
+                  :disabled="patchBusy"
+                  @click="handleApplyPatch"
+                >
+                  <span v-if="patchApplying" class="sync-spinner"></span>
+                  {{ patchApplying ? $t('windsurfTarget.patch.applying') : $t('windsurfTarget.patch.applyBtn') }}
+                </button>
+                <button
+                  type="button"
+                  class="target-btn patch-btn-restore"
+                  :disabled="patchBusy"
+                  @click="handleRestorePatch"
+                >
+                  <span v-if="patchRestoring" class="sync-spinner"></span>
+                  {{ patchRestoring ? $t('windsurfTarget.patch.restoring') : $t('windsurfTarget.patch.restoreBtn') }}
+                </button>
+              </div>
+
+              <p
+                v-if="patchActionMessage"
+                class="target-status patch-action-status"
+                :class="patchActionStatus === 'success' ? 'success' : (patchActionStatus === 'error' ? 'error' : '')"
+              >
+                {{ patchActionMessage }}
+              </p>
+
+              <p class="target-hint patch-warning">{{ $t('windsurfTarget.patch.warning') }}</p>
+            </div>
+
             <p v-if="saveStatus" class="target-status" :class="{ success: saveStatus === 'saved' }">
               {{ saveStatus === 'saved' ? $t('windsurfTarget.saved') : '' }}
             </p>
@@ -107,7 +183,7 @@
 </template>
 
 <script setup>
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useI18n } from 'vue-i18n'
 import {
@@ -133,6 +209,21 @@ const detecting = ref(false)
 const validating = ref(false)
 const installStatus = ref('idle') // 'idle' | 'detected' | 'not-found' | 'valid' | 'invalid'
 const saveStatus = ref('')
+
+// 无感切号补丁状态
+const patchStatus = reactive({
+  installed: false,
+  current_version: false,
+  oauth_handler: false,
+  timeout_removed: false,
+  prompt_bypass: false,
+})
+const patchStatusFetched = ref(false)
+const patchChecking = ref(false)
+const patchApplying = ref(false)
+const patchRestoring = ref(false)
+const patchActionStatus = ref('') // '' | 'success' | 'error'
+const patchActionMessage = ref('')
 
 const installPathTrimmed = ref('')
 watch(
@@ -172,6 +263,17 @@ const refreshStatusMessage = () => {
 
 watch(installStatus, refreshStatusMessage)
 
+const resetPatchState = () => {
+  patchStatus.installed = false
+  patchStatus.current_version = false
+  patchStatus.oauth_handler = false
+  patchStatus.timeout_removed = false
+  patchStatus.prompt_bypass = false
+  patchStatusFetched.value = false
+  patchActionStatus.value = ''
+  patchActionMessage.value = ''
+}
+
 const hydrateForm = () => {
   const saved = loadWindsurfTarget()
   form.clientType = saved.clientType
@@ -180,6 +282,149 @@ const hydrateForm = () => {
   installStatus.value = 'idle'
   saveStatus.value = ''
   refreshStatusMessage()
+  resetPatchState()
+}
+
+// 切换客户端类型 / 修改安装路径后重置补丁状态，避免显示陈旧信息
+watch(
+  () => form.clientType,
+  () => resetPatchState()
+)
+watch(
+  () => form.installPath,
+  () => resetPatchState()
+)
+
+const patchBusy = computed(
+  () => patchChecking.value || patchApplying.value || patchRestoring.value
+)
+
+const patchStatusInstalled = computed(
+  () => patchStatusFetched.value && patchStatus.installed
+)
+
+const patchStatusPillText = computed(() => {
+  if (patchChecking.value) return t('windsurfTarget.patch.checking')
+  if (!patchStatusFetched.value) return t('windsurfTarget.patch.statusUnknown')
+  if (patchStatus.installed) {
+    return patchStatus.current_version
+      ? t('windsurfTarget.patch.statusEnabled')
+      : t('windsurfTarget.patch.statusEnabledLegacy')
+  }
+  return t('windsurfTarget.patch.statusDisabled')
+})
+
+// 构造调用后端补丁命令的 windsurfTarget 参数（snake_case + camelCase 兼容 Tauri serde 两种风格）
+const buildPatchTargetPayload = () => {
+  const ct = form.clientType || DEFAULT_TARGET.clientType
+  const installPath = (form.installPath || '').trim()
+  const userDataDir = (form.userDataDir || '').trim()
+  const target = {
+    clientType: ct,
+    client_type: ct,
+  }
+  if (installPath) {
+    target.installPath = installPath
+    target.install_path = installPath
+  }
+  if (userDataDir) {
+    target.userDataDir = userDataDir
+    target.user_data_dir = userDataDir
+  }
+  return {
+    windsurfTarget: target,
+    windsurf_target: target,
+  }
+}
+
+const applyPatchStatusFromResp = (resp) => {
+  if (!resp || typeof resp !== 'object') return
+  patchStatus.installed = !!resp.installed
+  patchStatus.current_version = !!resp.current_version
+  patchStatus.oauth_handler = !!resp.oauth_handler
+  patchStatus.timeout_removed = !!resp.timeout_removed
+  patchStatus.prompt_bypass = !!resp.prompt_bypass
+  patchStatusFetched.value = true
+}
+
+const handleCheckPatchStatus = async () => {
+  if (patchBusy.value) return
+  patchChecking.value = true
+  patchActionStatus.value = ''
+  patchActionMessage.value = ''
+  try {
+    const resp = await invoke('check_seamless_patch_status', buildPatchTargetPayload())
+    applyPatchStatusFromResp(resp)
+    if (resp && resp.error) {
+      patchActionStatus.value = 'error'
+      patchActionMessage.value = String(resp.error)
+    }
+  } catch (err) {
+    console.warn('[windsurfTarget] check patch status failed', err)
+    patchStatusFetched.value = false
+    patchActionStatus.value = 'error'
+    patchActionMessage.value = String(err && err.message ? err.message : err)
+  } finally {
+    patchChecking.value = false
+  }
+}
+
+const handleApplyPatch = async () => {
+  if (patchBusy.value) return
+  patchApplying.value = true
+  patchActionStatus.value = ''
+  patchActionMessage.value = ''
+  try {
+    const resp = await invoke('apply_seamless_patch', buildPatchTargetPayload())
+    if (resp && resp.message) {
+      patchActionStatus.value = 'success'
+      patchActionMessage.value = String(resp.message)
+    } else {
+      patchActionStatus.value = 'success'
+      patchActionMessage.value = t('windsurfTarget.patch.applySuccess')
+    }
+    // 应用成功后重新拉一次状态
+    await handleCheckPatchStatus()
+    // handleCheckPatchStatus 会重置 patchActionStatus，这里再恢复一下成功消息
+    if (resp && resp.message) {
+      patchActionStatus.value = 'success'
+      patchActionMessage.value = String(resp.message)
+    }
+  } catch (err) {
+    console.warn('[windsurfTarget] apply patch failed', err)
+    patchActionStatus.value = 'error'
+    patchActionMessage.value = String(err && err.message ? err.message : err)
+  } finally {
+    patchApplying.value = false
+  }
+}
+
+const handleRestorePatch = async () => {
+  if (patchBusy.value) return
+  patchRestoring.value = true
+  patchActionStatus.value = ''
+  patchActionMessage.value = ''
+  try {
+    const resp = await invoke('restore_seamless_patch', buildPatchTargetPayload())
+    if (resp && resp.message) {
+      patchActionStatus.value = 'success'
+      patchActionMessage.value = String(resp.message)
+    } else {
+      patchActionStatus.value = 'success'
+      patchActionMessage.value = t('windsurfTarget.patch.restoreSuccess')
+    }
+    await handleCheckPatchStatus()
+    if (resp && resp.message) {
+      patchActionStatus.value = 'success'
+      patchActionMessage.value = String(resp.message)
+    }
+  } catch (err) {
+    console.warn('[windsurfTarget] restore patch failed', err)
+    patchActionStatus.value = 'error'
+    patchActionMessage.value = String(err && err.message ? err.message : err)
+  } finally {
+    patchRestoring.value = false
+  }
 }
 
 watch(
@@ -282,15 +527,20 @@ const handleSave = () => {
 
 .import-dialog {
   width: min(720px, 96vw);
+  max-height: calc(100vh - 40px);
   background: var(--color-surface, #ffffff);
   color: var(--color-text-primary, #374151);
   border: 1px solid var(--color-border, #e5e7eb);
   border-radius: 14px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   box-shadow: var(--color-shadow-modal, 0 20px 40px rgba(0, 0, 0, 0.22));
 }
 
 .dialog-header {
+  flex-shrink: 0;
   padding: 14px 16px;
   border-bottom: 1px solid var(--color-border-muted, rgba(0, 0, 0, 0.06));
   display: flex;
@@ -324,7 +574,12 @@ const handleSave = () => {
 }
 
 .dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 14px 16px;
+  -webkit-overflow-scrolling: touch;
 }
 
 .dialog-message {
@@ -335,6 +590,7 @@ const handleSave = () => {
 }
 
 .dialog-footer {
+  flex-shrink: 0;
   padding: 14px 16px;
   border-top: 1px solid var(--color-border-muted, rgba(0, 0, 0, 0.06));
   display: flex;
@@ -546,5 +802,238 @@ const handleSave = () => {
 
 [data-theme='dark'] .target-status.error {
   color: #f87171;
+}
+
+/* ========== 无感切号补丁分区 ========== */
+
+.patch-section {
+  margin-top: 6px;
+  padding: 14px;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 10px;
+  background: var(--color-surface-soft, #f8fafc);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.patch-section-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-heading, #1f2937);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.patch-intro {
+  margin: 0;
+}
+
+.patch-status-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.patch-status-label {
+  font-size: 12px;
+  color: var(--color-text-secondary, #4b5563);
+  font-weight: 600;
+}
+
+.patch-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  background: var(--color-btn-secondary-bg, #f1f5f9);
+  color: var(--color-btn-secondary-text, #374151);
+}
+
+.patch-status-pill.enabled {
+  background: rgba(16, 185, 129, 0.14);
+  color: #047857;
+  border-color: rgba(16, 185, 129, 0.32);
+}
+
+.patch-status-pill.disabled {
+  background: rgba(107, 114, 128, 0.14);
+  color: #4b5563;
+  border-color: rgba(107, 114, 128, 0.28);
+}
+
+.patch-status-pill.unknown {
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+  border-color: rgba(245, 158, 11, 0.28);
+}
+
+.patch-status-pill.checking {
+  background: rgba(59, 130, 246, 0.12);
+  color: #2563eb;
+  border-color: rgba(59, 130, 246, 0.28);
+}
+
+.patch-status-pill .sync-spinner {
+  width: 11px;
+  height: 11px;
+  border-width: 2px;
+  border-color: rgba(0, 0, 0, 0.12);
+  border-top-color: currentColor;
+}
+
+.patch-detail-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.patch-detail-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-text-secondary, #4b5563);
+  line-height: 1.4;
+}
+
+.patch-flag-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.patch-detail-list li.patch-flag-ok {
+  color: var(--color-text-primary, #374151);
+}
+
+.patch-detail-list li.patch-flag-ok .patch-flag-marker {
+  background: rgba(16, 185, 129, 0.16);
+  color: #047857;
+}
+
+.patch-detail-list li.patch-flag-pending .patch-flag-marker {
+  background: rgba(148, 163, 184, 0.18);
+  color: var(--color-text-muted, #64748b);
+}
+
+.patch-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.patch-btn-apply {
+  background: var(--color-btn-primary-bg, #3b82f6);
+  border-color: var(--color-btn-primary-bg, #3b82f6);
+  color: var(--color-btn-primary-text, #ffffff);
+}
+
+.patch-btn-apply:hover:not(:disabled) {
+  background: var(--color-btn-primary-bg-hover, #2563eb);
+  border-color: var(--color-btn-primary-bg-hover, #2563eb);
+}
+
+.patch-btn-apply .sync-spinner {
+  border-color: rgba(255, 255, 255, 0.45);
+  border-top-color: #ffffff;
+}
+
+.patch-btn-restore {
+  background: transparent;
+}
+
+.patch-action-status {
+  margin: 0;
+}
+
+.patch-warning {
+  margin: 2px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  color: #92400e;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+[data-theme='dark'] .patch-section {
+  background: rgba(148, 163, 184, 0.08);
+  border-color: rgba(148, 163, 184, 0.22);
+}
+
+[data-theme='dark'] .patch-status-label {
+  color: var(--color-text-secondary, #cbd5f5);
+}
+
+[data-theme='dark'] .patch-status-pill {
+  background: rgba(148, 163, 184, 0.16);
+  color: var(--color-text-primary, #e2e8f0);
+}
+
+[data-theme='dark'] .patch-status-pill.enabled {
+  background: rgba(45, 212, 191, 0.18);
+  color: #5eead4;
+  border-color: rgba(45, 212, 191, 0.4);
+}
+
+[data-theme='dark'] .patch-status-pill.disabled {
+  background: rgba(148, 163, 184, 0.18);
+  color: var(--color-text-secondary, #cbd5f5);
+  border-color: rgba(148, 163, 184, 0.32);
+}
+
+[data-theme='dark'] .patch-status-pill.unknown {
+  background: rgba(250, 204, 21, 0.16);
+  color: #fde68a;
+  border-color: rgba(250, 204, 21, 0.32);
+}
+
+[data-theme='dark'] .patch-status-pill.checking {
+  background: rgba(96, 165, 250, 0.18);
+  color: #93c5fd;
+  border-color: rgba(96, 165, 250, 0.32);
+}
+
+[data-theme='dark'] .patch-detail-list li {
+  color: var(--color-text-secondary, #cbd5f5);
+}
+
+[data-theme='dark'] .patch-detail-list li.patch-flag-ok {
+  color: var(--color-text-primary, #e2e8f0);
+}
+
+[data-theme='dark'] .patch-detail-list li.patch-flag-ok .patch-flag-marker {
+  background: rgba(45, 212, 191, 0.22);
+  color: #5eead4;
+}
+
+[data-theme='dark'] .patch-detail-list li.patch-flag-pending .patch-flag-marker {
+  background: rgba(148, 163, 184, 0.22);
+  color: var(--color-text-muted, #94a3b8);
+}
+
+[data-theme='dark'] .patch-warning {
+  background: rgba(250, 204, 21, 0.12);
+  border-color: rgba(250, 204, 21, 0.32);
+  color: #fde68a;
 }
 </style>

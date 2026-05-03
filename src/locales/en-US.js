@@ -179,6 +179,27 @@ export default {
     invalid: 'Path is invalid: extension.js not found under that directory',
     resetDefaults: 'Reset to Defaults',
     save: 'Save',
-    saved: 'Saved. Will take effect on next login.'
+    saved: 'Saved. Will take effect on next login.',
+    patch: {
+      title: 'Seamless Account Switching Patch',
+      intro: 'Patches Windsurf\'s built-in OAuth callback so account switching no longer needs in-app confirmation and is no longer capped by the 180-second timeout.',
+      statusLabel: 'Current status:',
+      statusEnabled: 'Enabled',
+      statusEnabledLegacy: 'Enabled (older version, click Apply to upgrade)',
+      statusDisabled: 'Disabled',
+      statusUnknown: 'Unknown',
+      checkBtn: 'Check Status',
+      checking: 'Checking...',
+      applyBtn: 'Enable Seamless Switch',
+      applying: 'Applying...',
+      restoreBtn: 'Restore (Disable Seamless Switch)',
+      restoring: 'Restoring...',
+      flagOauth: 'OAuth handler: accept access_token from any windsurf:// callback',
+      flagTimeout: '180-second OAuth timeout removed',
+      flagPrompt: 'Bypass the "log in using a different account" confirmation dialog',
+      applySuccess: 'Patch applied',
+      restoreSuccess: 'Restored to the original extension.js',
+      warning: 'This patches extension.js inside the Windsurf install directory. The original file is backed up first (up to 3 generations) and can be restored with one click. On first use it is recommended to detect the install path above.'
+    }
   }
 }

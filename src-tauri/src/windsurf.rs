@@ -3496,3 +3496,387 @@ pub fn validate_windsurf_install_path(path: String) -> bool {
     }
     is_valid_windsurf_install_dir(&PathBuf::from(path))
 }
+
+// ============================================================================
+//  无感切号补丁（Seamless Account Switch Patch）
+//
+//  通过修改 Windsurf 安装目录下的 `extension.js`，去掉 OAuth 回调中的：
+//    1. URI 路径白名单限制（只处理 `/refresh-authentication-session`）
+//       → 改为内联 URLSearchParams 解析 fragment.access_token 并直接调
+//         `this.handleAuthToken()`，让任意 windsurf:// 回调都能完成登录。
+//    2. 180 秒超时 Promise（Promise.race 中的 setTimeout 分支）
+//    3. 切号时的 "Are you sure you want to log in using a different
+//       account?" 模态确认框 → 替换为 `if(true)` 直接旁路。
+//
+//  三处正则的匹配以 chaogei/windsurf-account-manager-simple 的实现为基础保持一致。
+//  打补丁前会自动备份原文件（同目录下 `extension.js.backup.YYYYMMDD_HHMMSS`），
+//  最多保留 3 份。还原会从备份文件覆盖回去；如果记录的备份失效会回退到磁盘扫描。
+// ============================================================================
+
+/// 三处补丁正则（识别"未打补丁"的原始结构）。三条都匹配不上即视为已打过当前版本补丁。
+const PATCH_PATTERN_URI_HANDLER: &str = r#"this\._uriHandler\.event\((\w+)=>\{"/refresh-authentication-session"===(\w+)\.path&&\(0,(\w+)\.refreshAuthenticationSession\)\(\)\}\)"#;
+const PATCH_PATTERN_TIMEOUT: &str = r#",new Promise\(\((\w+),(\w+)\)=>setTimeout\(\(\)=>\{(\w+)\(new (\w+)\)\},18e4\)\)"#;
+const PATCH_PATTERN_DIFF_ACCOUNT_PROMPT: &str = r#"if\("Yes"===await (\w+)\.window\.showWarningMessage\("Are you sure you want to log in using a different account\?",\{modal:!0\},"Yes"\)\)"#;
+/// 当前版本注入代码独有的特征字符串，用于辅助判别"已安装的是当前版本还是历史/第三方版本"
+const PATCH_CURRENT_VERSION_MARKER: &str = "Failed to handle OAuth callback";
+
+/// 把 `WindsurfTarget` 解析成补丁要操作的安装根路径（同时返回 client_type 供后续重启）。
+fn resolve_install_path_for_patch(target: &WindsurfTarget) -> Result<(PathBuf, String), String> {
+    let client_type = target.normalized_client_type().to_string();
+
+    let candidate = target
+        .install_path
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| detect_windsurf_install_path_impl(&client_type));
+
+    match candidate {
+        Some(p) => {
+            let path = PathBuf::from(p);
+            if !is_valid_windsurf_install_dir(&path) {
+                return Err(format!(
+                    "未在 {:?} 找到 extension.js，请确认安装路径是否正确",
+                    path
+                ));
+            }
+            Ok((path, client_type))
+        }
+        None => Err("未能定位 Windsurf 安装路径，请先在设置中填写或检测".to_string()),
+    }
+}
+
+/// 在扩展目录中查找最近一份可用备份。
+fn find_latest_patch_backup(extension_dir: &std::path::Path) -> Option<PathBuf> {
+    let mut backups: Vec<PathBuf> = fs::read_dir(extension_dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("extension.js.backup."))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    backups.sort_by(|a, b| {
+        let ta = fs::metadata(a).and_then(|m| m.modified()).ok();
+        let tb = fs::metadata(b).and_then(|m| m.modified()).ok();
+        tb.cmp(&ta)
+    });
+
+    backups.into_iter().next()
+}
+
+/// Windsurf 进程名（用于 pgrep / taskkill）。
+fn windsurf_process_name(client_type: &str) -> &'static str {
+    if client_type == "windsurf-next" {
+        "Windsurf - Next"
+    } else {
+        "Windsurf"
+    }
+}
+
+/// 检测 Windsurf 是否正在运行（按进程名匹配）。
+fn is_windsurf_process_running(client_type: &str) -> bool {
+    let name = windsurf_process_name(client_type);
+
+    #[cfg(target_os = "windows")]
+    {
+        let exe = format!("{}.exe", name);
+        if let Ok(out) = command_hidden("tasklist")
+            .args(["/FI", &format!("IMAGENAME eq {}", exe), "/NH"])
+            .output()
+        {
+            return String::from_utf8_lossy(&out.stdout).contains(&exe);
+        }
+        false
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new("pgrep")
+            .args(["-f", name])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+}
+
+/// 重启 Windsurf。仅当进程在运行时才重启，返回是否实际执行了重启。
+async fn restart_windsurf_after_patch(
+    install_path: &std::path::Path,
+    client_type: &str,
+) -> Result<bool, String> {
+    if !is_windsurf_process_running(client_type) {
+        return Ok(false);
+    }
+
+    let name = windsurf_process_name(client_type);
+
+    #[cfg(target_os = "windows")]
+    {
+        let exe = format!("{}.exe", name);
+        let _ = command_hidden("taskkill")
+            .args(["/F", "/IM", &exe])
+            .output()
+            .map_err(|e| format!("关闭 {} 失败: {}", name, e))?;
+
+        sleep(Duration::from_secs(2)).await;
+
+        // Windows 上从开始菜单 .lnk 启动；找不到则尝试直接 spawn 安装目录下同名 .exe
+        let exe_in_install = install_path.join(format!("{}.exe", name));
+        if exe_in_install.exists() {
+            command_hidden("cmd")
+                .args(["/C", "start", "", &exe_in_install.to_string_lossy()])
+                .spawn()
+                .map_err(|e| format!("启动 {} 失败: {}", name, e))?;
+            return Ok(true);
+        }
+        return Err(format!("未找到 {} 启动入口（{:?}）", name, exe_in_install));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", name])
+            .output()
+            .map_err(|e| format!("关闭 {} 失败: {}", name, e))?;
+        sleep(Duration::from_secs(2)).await;
+
+        // 优先用安装路径精确启动（兼容用户改过 .app 名 / 便携安装）
+        std::process::Command::new("open")
+            .arg(install_path)
+            .spawn()
+            .map_err(|e| format!("启动 {} 失败: {}", name, e))?;
+        Ok(true)
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", &name.to_lowercase()])
+            .output()
+            .map_err(|e| format!("关闭 {} 失败: {}", name, e))?;
+        sleep(Duration::from_secs(2)).await;
+
+        std::process::Command::new(name.to_lowercase())
+            .spawn()
+            .map_err(|e| format!("启动 {} 失败: {}", name, e))?;
+        Ok(true)
+    }
+}
+
+/// 检查指定安装路径下的 extension.js 是否已被打过当前版本补丁。
+#[tauri::command]
+pub fn check_seamless_patch_status(
+    windsurf_target: Option<WindsurfTarget>,
+) -> Result<serde_json::Value, String> {
+    let target = windsurf_target.unwrap_or_default();
+    let (install_path, _client_type) = resolve_install_path_for_patch(&target)?;
+    let extension_file = install_path.join(extension_js_relative_path());
+
+    if !extension_file.exists() {
+        return Ok(serde_json::json!({
+            "installed": false,
+            "current_version": false,
+            "oauth_handler": false,
+            "timeout_removed": false,
+            "prompt_bypass": false,
+            "error": "extension.js 文件不存在",
+        }));
+    }
+
+    let content = fs::read_to_string(&extension_file)
+        .map_err(|e| format!("读取 extension.js 失败: {}", e))?;
+
+    let p1 = regex::Regex::new(PATCH_PATTERN_URI_HANDLER)
+        .map_err(|e| format!("正则编译失败: {}", e))?;
+    let p2 = regex::Regex::new(PATCH_PATTERN_TIMEOUT)
+        .map_err(|e| format!("正则编译失败: {}", e))?;
+    let p3 = regex::Regex::new(PATCH_PATTERN_DIFF_ACCOUNT_PROMPT)
+        .map_err(|e| format!("正则编译失败: {}", e))?;
+
+    let p1_orig = p1.is_match(&content);
+    let p2_orig = p2.is_match(&content);
+    let p3_orig = p3.is_match(&content);
+
+    let installed = !p1_orig && !p2_orig && !p3_orig;
+    let current_version = content.contains(PATCH_CURRENT_VERSION_MARKER);
+
+    Ok(serde_json::json!({
+        "installed": installed,
+        "current_version": current_version,
+        "oauth_handler": !p1_orig,
+        "timeout_removed": !p2_orig,
+        "prompt_bypass": !p3_orig,
+    }))
+}
+
+/// 应用无感切号补丁。
+#[tauri::command]
+pub async fn apply_seamless_patch(
+    windsurf_target: Option<WindsurfTarget>,
+) -> Result<serde_json::Value, String> {
+    let target = windsurf_target.unwrap_or_default();
+    let (install_path, client_type) = resolve_install_path_for_patch(&target)?;
+    let extension_file = install_path.join(extension_js_relative_path());
+    let parent_dir = extension_file
+        .parent()
+        .ok_or_else(|| "无法获取 extension.js 所在目录".to_string())?
+        .to_path_buf();
+
+    let content = fs::read_to_string(&extension_file)
+        .map_err(|e| format!("读取 extension.js 失败: {}", e))?;
+
+    let p1 = regex::Regex::new(PATCH_PATTERN_URI_HANDLER)
+        .map_err(|e| format!("正则编译失败: {}", e))?;
+    let p2 = regex::Regex::new(PATCH_PATTERN_TIMEOUT)
+        .map_err(|e| format!("正则编译失败: {}", e))?;
+    let p3 = regex::Regex::new(PATCH_PATTERN_DIFF_ACCOUNT_PROMPT)
+        .map_err(|e| format!("正则编译失败: {}", e))?;
+
+    let p1_orig = p1.is_match(&content);
+    let p2_orig = p2.is_match(&content);
+    let p3_orig = p3.is_match(&content);
+
+    // dry-run：三条原始 pattern 都已不匹配 = 已打过当前版本补丁，跳过备份与写入。
+    if !p1_orig && !p2_orig && !p3_orig {
+        return Ok(serde_json::json!({
+            "success": true,
+            "already_patched": true,
+            "modifications": Vec::<&str>::new(),
+            "restarted": false,
+            "message": "补丁已经应用，无需重复操作",
+        }));
+    }
+
+    // 备份轮转：保留最多 3 份历史备份
+    let mut backups: Vec<PathBuf> = fs::read_dir(&parent_dir)
+        .map_err(|e| format!("读取扩展目录失败: {}", e))?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("extension.js.backup."))
+                .unwrap_or(false)
+        })
+        .collect();
+    backups.sort_by_key(|p| fs::metadata(p).and_then(|m| m.modified()).ok());
+    while backups.len() >= 3 {
+        if let Some(oldest) = backups.first().cloned() {
+            let _ = fs::remove_file(&oldest);
+            backups.remove(0);
+        } else {
+            break;
+        }
+    }
+
+    // 新建本次备份
+    let backup_file = extension_file.with_extension(format!(
+        "js.backup.{}",
+        chrono::Local::now().format("%Y%m%d_%H%M%S")
+    ));
+    fs::copy(&extension_file, &backup_file)
+        .map_err(|e| format!("备份 extension.js 失败: {}", e))?;
+
+    // 应用三处替换
+    let mut modified = content.clone();
+    let mut modifications: Vec<&'static str> = Vec::new();
+
+    // 6.1 OAuth 回调处理器
+    if let Some(caps) = p1.captures(&modified) {
+        let v1 = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+        let v2 = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+        let m_name = caps.get(3).map(|m| m.as_str()).unwrap_or("");
+        if !v1.is_empty() && v1 == v2 && !m_name.is_empty() {
+            let replacement = format!(
+                r#"this._uriHandler.event(async {0}=>{{if("/refresh-authentication-session"==={0}.path){{(0,{1}.refreshAuthenticationSession)()}}else{{try{{const t=new URLSearchParams({0}.fragment).get("access_token");if(!t)throw new Error("No access_token in URI fragment");await this.handleAuthToken(t)}}catch(e){{console.error("[Windsurf] Failed to handle OAuth callback:",e)}}}}}})"#,
+                v1, m_name
+            );
+            let full_match = caps.get(0).unwrap().as_str().to_string();
+            modified = modified.replace(&full_match, &replacement);
+            modifications.push("oauth_handler");
+        }
+    }
+
+    // 6.2 移除 180 秒超时
+    if let Some(caps) = p2.captures(&modified) {
+        let r1 = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+        let r2 = caps.get(3).map(|m| m.as_str()).unwrap_or("");
+        if !r1.is_empty() && r1 == r2 {
+            let full_match = caps.get(0).unwrap().as_str().to_string();
+            modified = modified.replace(&full_match, "");
+            modifications.push("timeout_removed");
+        }
+    }
+
+    // 6.3 跳过切号确认对话框
+    if let Some(caps) = p3.captures(&modified) {
+        let full_match = caps.get(0).unwrap().as_str().to_string();
+        modified = modified.replace(&full_match, "if(true)");
+        modifications.push("prompt_bypass");
+    }
+
+    if modified == content {
+        // pattern 命中却未替换 = 版本漂移，回滚备份并报错
+        let _ = fs::remove_file(&backup_file);
+        return Err("正则匹配成功但替换无变化，疑似 Windsurf 版本与补丁不兼容，请升级 avw".to_string());
+    }
+
+    fs::write(&extension_file, &modified)
+        .map_err(|e| format!("写入 extension.js 失败: {}", e))?;
+
+    // 重启 Windsurf（仅当其在运行时）
+    let restarted = restart_windsurf_after_patch(&install_path, &client_type).await?;
+
+    Ok(serde_json::json!({
+        "success": true,
+        "already_patched": false,
+        "modifications": modifications,
+        "backup_file": backup_file.to_string_lossy().to_string(),
+        "restarted": restarted,
+        "message": if restarted {
+            format!("补丁应用成功，{} 已重启", windsurf_process_name(&client_type))
+        } else {
+            format!("补丁应用成功，{} 未运行无需重启", windsurf_process_name(&client_type))
+        },
+    }))
+}
+
+/// 还原无感切号补丁（恢复到最近一份备份）。
+#[tauri::command]
+pub async fn restore_seamless_patch(
+    windsurf_target: Option<WindsurfTarget>,
+) -> Result<serde_json::Value, String> {
+    let target = windsurf_target.unwrap_or_default();
+    let (install_path, client_type) = resolve_install_path_for_patch(&target)?;
+    let extension_file = install_path.join(extension_js_relative_path());
+    let parent_dir = extension_file
+        .parent()
+        .ok_or_else(|| "无法获取 extension.js 所在目录".to_string())?
+        .to_path_buf();
+
+    let backup = find_latest_patch_backup(&parent_dir).ok_or_else(|| {
+        "未找到任何 extension.js 备份，无法还原。请重装 Windsurf 或从官方渠道重新获取 extension.js"
+            .to_string()
+    })?;
+
+    fs::copy(&backup, &extension_file)
+        .map_err(|e| format!("还原 extension.js 失败: {} (备份文件: {:?})", e, backup))?;
+
+    let restarted = restart_windsurf_after_patch(&install_path, &client_type).await?;
+
+    Ok(serde_json::json!({
+        "success": true,
+        "backup_used": backup.to_string_lossy().to_string(),
+        "restarted": restarted,
+        "message": if restarted {
+            format!("补丁已还原，{} 已重启", windsurf_process_name(&client_type))
+        } else {
+            format!("补丁已还原，{} 未运行无需重启", windsurf_process_name(&client_type))
+        },
+    }))
+}

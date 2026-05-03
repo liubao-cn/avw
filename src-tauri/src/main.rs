@@ -36,6 +36,10 @@ fn main() {
             // Windsurf 安装路径识别：支持自定义安装位置 / Windsurf - Next
             windsurf::detect_windsurf_install_path,
             windsurf::validate_windsurf_install_path,
+            // 无感切号补丁
+            windsurf::check_seamless_patch_status,
+            windsurf::apply_seamless_patch,
+            windsurf::restore_seamless_patch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

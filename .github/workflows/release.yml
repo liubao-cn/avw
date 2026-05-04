@@ -92,9 +92,8 @@ jobs:
           releaseBody: |
             ## 本次更新亮点
 
-            - **支持 Windsurf - Next 预览版**：在右下角 ⚙ Windsurf 设置里切换客户端类型，登录会自动走 `windsurf-next://` 协议 + Next 专属用户数据目录。
-            - **自定义 Windsurf 安装路径**：Windsurf 装到非默认位置时，可在设置里手动填写或点"自动检测"，支持 macOS / Windows（含开始菜单快捷方式解析）/ Linux 常见位置。
-            - **自定义用户数据目录**：支持便携模式或用 `--user-data-dir` 启动 Windsurf 的场景，机器 ID 重置会正确命中你指定的 `storage.json`。
+            - **修复 Auth1 一键导入失效**：2026-04 后服务端升级了 `WindsurfPostAuth` 调用约定——`auth1_token` 从原来的 body field 1 迁移到 **`X-Devin-Auth1-Token` HTTP header**，body 只保留 `org_id`。旧客户端按原方式发送会被服务端 protobuf 反序列化拒绝并返回 `400 invalid_argument`，直接表现为「Auth1 token 无效或已过期」「无法导入账号」。本次完整对齐新协议，导入 / 切号 / 刷新额度 / 查看分析全链路恢复。
+            - **历史版本主要特性**（沿用 v1.5.0）：支持 Windsurf - Next 预览版、自定义 Windsurf 安装路径、自定义用户数据目录、无感切号补丁等。
 
             ## 下载前请先选对架构
 

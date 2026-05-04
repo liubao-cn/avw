@@ -591,18 +591,24 @@ fn parse_windsurf_post_auth_response(bytes: &[u8]) -> Result<WindsurfPostAuthRes
 
 /// 通过 `WindsurfPostAuth` 接口，用 `auth1_token` 换取 `session_token` 以及 Devin 扩展字段。
 ///
-/// - `auth1_token`：Devin 一级令牌（格式 `auth1_<52>`）
+/// - `auth1_token`：Devin 一级令牌（格式 `auth1_<52>`），通过 `X-Devin-Auth1-Token` header 携带
 /// - `org_id`：可选的目标组织 ID；传空时由后端按用户 primary org 返回
+///
+/// 协议变更说明（2026-04 后服务端升级）：
+/// - 旧版：`auth1_token` 编码到 body field 1，`org_id` 编码到 body field 2
+/// - 新版：body **只携带 `org_id`（field 1）**，`auth1_token` 通过 **`X-Devin-Auth1-Token`
+///   header** 鉴权。错误地把 `auth1_token` 放进 body 会让服务端 protobuf 反序列化失败
+///   并返回 `400 invalid_argument`。
 async fn windsurf_post_auth_internal(
     auth1_token: &str,
     org_id: &str,
 ) -> Result<WindsurfPostAuthResponse, String> {
     let http_client = create_http_client()?;
 
-    let mut body = Vec::with_capacity(auth1_token.len() + org_id.len() + 4);
-    append_protobuf_string_field(&mut body, 1, auth1_token);
+    // 新版协议：body 只携带 org_id（field 1），不再包含 auth1_token
+    let mut body = Vec::with_capacity(org_id.len() + 4);
     if !org_id.is_empty() {
-        append_protobuf_string_field(&mut body, 2, org_id);
+        append_protobuf_string_field(&mut body, 1, org_id);
     }
 
     let response = http_client
@@ -620,6 +626,8 @@ async fn windsurf_post_auth_internal(
             "User-Agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         )
+        // 新版协议：auth1_token 通过 X-Devin-Auth1-Token header 携带
+        .header("X-Devin-Auth1-Token", auth1_token)
         .body(body)
         .send()
         .await

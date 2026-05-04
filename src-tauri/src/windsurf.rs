@@ -599,17 +599,25 @@ fn parse_windsurf_post_auth_response(bytes: &[u8]) -> Result<WindsurfPostAuthRes
 /// - 新版：body **只携带 `org_id`（field 1）**，`auth1_token` 通过 **`X-Devin-Auth1-Token`
 ///   header** 鉴权。错误地把 `auth1_token` 放进 body 会让服务端 protobuf 反序列化失败
 ///   并返回 `400 invalid_argument`。
+///
+/// 兼容性说明（v1.5.2 修复 Windows 411 LengthRequired）：
+/// `org_id` 即使为空也显式编码为 field 1（proto3 中显式空字符串与未传字段语义等价），
+/// 确保请求体至少 2 字节。否则当 `org_id` 为空时 body 是 0 字节，Windows 上 reqwest 经
+/// schannel + HTTP/2 协商时不会发送 `Content-Length: 0` 也不会发 DATA frame，CloudFront
+/// 转发到上游 origin 时丢失长度信息，整体被网关层拦下并返回 `411 Length Required`
+/// （`text/html` HTML 错误页，根本到不了后端）。macOS 上走 native-tls + HTTP/1.1，0-byte
+/// 请求会自带 `Content-Length: 0`，所以表现不一致。
 async fn windsurf_post_auth_internal(
     auth1_token: &str,
     org_id: &str,
 ) -> Result<WindsurfPostAuthResponse, String> {
     let http_client = create_http_client()?;
 
-    // 新版协议：body 只携带 org_id（field 1），不再包含 auth1_token
+    // 新版协议：body 只携带 org_id（field 1），不再包含 auth1_token。
+    // 这里**总是**编码 field 1（即使 org_id 为空字符串），让 body 至少 2 字节，避免
+    // Windows 上 0-byte POST 请求被 CloudFront 拒绝返回 411 LengthRequired。
     let mut body = Vec::with_capacity(org_id.len() + 4);
-    if !org_id.is_empty() {
-        append_protobuf_string_field(&mut body, 1, org_id);
-    }
+    append_protobuf_string_field(&mut body, 1, org_id);
 
     let response = http_client
         .post(WINDSURF_POST_AUTH_API)

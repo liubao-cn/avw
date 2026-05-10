@@ -5,4 +5,3 @@ pub fn create_http_client() -> Result<Client, String> {
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {}", e))
 }
-

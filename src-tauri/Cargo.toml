@@ -1,6 +1,6 @@
 [package]
 name = "AVW"
-version = "1.5.2"
+version = "1.5.3"
 description = "Windsurf Manager - 用于管理 Windsurf 账号、Credits 与使用数据分析的桌面应用"
 authors = ["liubao-cn"]
 license = "MIT"
@@ -26,6 +26,7 @@ chrono = { version = "0.4", features = ["serde"] }
 hex = "0.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 regex = "1.11"
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3.0"

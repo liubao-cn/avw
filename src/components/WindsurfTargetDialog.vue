@@ -61,11 +61,47 @@
                   <span v-if="validating" class="sync-spinner"></span>
                   {{ validating ? $t('windsurfTarget.validating') : $t('windsurfTarget.validate') }}
                 </button>
+                <button
+                  type="button"
+                  class="target-btn"
+                  :disabled="diagnosing"
+                  @click="handleDiagnose"
+                >
+                  <span v-if="diagnosing" class="sync-spinner"></span>
+                  {{ diagnosing ? $t('windsurfTarget.diagnosing') : $t('windsurfTarget.diagnose') }}
+                </button>
               </div>
               <p v-if="installStatusMessage" class="target-status" :class="installStatusClass">
                 {{ installStatusMessage }}
               </p>
               <p class="target-hint">{{ $t('windsurfTarget.installPathHint') }}</p>
+              <div v-if="diagnoseResult" class="path-diagnosis">
+                <div class="diagnosis-row">
+                  <span>{{ $t('windsurfTarget.diagnosisPlatform') }}</span>
+                  <strong>{{ diagnoseResult.platform || '-' }}</strong>
+                </div>
+                <div class="diagnosis-row">
+                  <span>{{ $t('windsurfTarget.diagnosisPicked') }}</span>
+                  <code>{{ diagnoseResult.picked || $t('windsurfTarget.diagnosisNone') }}</code>
+                </div>
+                <div class="diagnosis-row">
+                  <span>{{ $t('windsurfTarget.diagnosisExisting') }}</span>
+                  <strong>{{ diagnoseExistingCount }}</strong>
+                </div>
+                <details class="diagnosis-details">
+                  <summary>{{ $t('windsurfTarget.diagnosisCandidates', { count: diagnoseCandidateCount }) }}</summary>
+                  <ul>
+                    <li
+                      v-for="candidate in diagnoseCandidates"
+                      :key="candidate"
+                      :class="{ hit: diagnoseExistingSet.has(candidate) }"
+                    >
+                      <span>{{ diagnoseExistingSet.has(candidate) ? '✓' : '○' }}</span>
+                      <code>{{ candidate }}</code>
+                    </li>
+                  </ul>
+                </details>
+              </div>
             </div>
 
             <div class="target-field">
@@ -207,8 +243,10 @@ const emit = defineEmits(['update:visible', 'close'])
 const form = reactive({ ...DEFAULT_TARGET })
 const detecting = ref(false)
 const validating = ref(false)
+const diagnosing = ref(false)
 const installStatus = ref('idle') // 'idle' | 'detected' | 'not-found' | 'valid' | 'invalid'
 const saveStatus = ref('')
+const diagnoseResult = ref(null)
 
 // 无感切号补丁状态
 const patchStatus = reactive({
@@ -236,6 +274,10 @@ watch(
 
 const installStatusMessage = ref('')
 const installStatusClass = ref('')
+const diagnoseCandidates = computed(() => Array.isArray(diagnoseResult.value?.candidates) ? diagnoseResult.value.candidates : [])
+const diagnoseExistingSet = computed(() => new Set(Array.isArray(diagnoseResult.value?.existing) ? diagnoseResult.value.existing : []))
+const diagnoseExistingCount = computed(() => diagnoseExistingSet.value.size)
+const diagnoseCandidateCount = computed(() => diagnoseCandidates.value.length)
 
 const refreshStatusMessage = () => {
   switch (installStatus.value) {
@@ -274,6 +316,10 @@ const resetPatchState = () => {
   patchActionMessage.value = ''
 }
 
+const resetDiagnosis = () => {
+  diagnoseResult.value = null
+}
+
 const hydrateForm = () => {
   const saved = loadWindsurfTarget()
   form.clientType = saved.clientType
@@ -281,6 +327,7 @@ const hydrateForm = () => {
   form.userDataDir = saved.userDataDir
   installStatus.value = 'idle'
   saveStatus.value = ''
+  resetDiagnosis()
   refreshStatusMessage()
   resetPatchState()
 }
@@ -288,11 +335,17 @@ const hydrateForm = () => {
 // 切换客户端类型 / 修改安装路径后重置补丁状态，避免显示陈旧信息
 watch(
   () => form.clientType,
-  () => resetPatchState()
+  () => {
+    resetPatchState()
+    resetDiagnosis()
+  }
 )
 watch(
   () => form.installPath,
-  () => resetPatchState()
+  () => {
+    resetPatchState()
+    resetDiagnosis()
+  }
 )
 
 const patchBusy = computed(
@@ -489,12 +542,35 @@ const handleValidate = async () => {
   }
 }
 
+const handleDiagnose = async () => {
+  diagnosing.value = true
+  try {
+    diagnoseResult.value = await invoke('diagnose_windsurf_install_paths', {
+      clientType: form.clientType,
+      client_type: form.clientType,
+      customInstallPath: installPathTrimmed.value || null,
+      custom_install_path: installPathTrimmed.value || null,
+    })
+  } catch (err) {
+    console.warn('[windsurfTarget] diagnose failed', err)
+    diagnoseResult.value = {
+      platform: '-',
+      picked: null,
+      existing: [],
+      candidates: [],
+    }
+  } finally {
+    diagnosing.value = false
+  }
+}
+
 const handleResetDefaults = () => {
   form.clientType = DEFAULT_TARGET.clientType
   form.installPath = DEFAULT_TARGET.installPath
   form.userDataDir = DEFAULT_TARGET.userDataDir
   installStatus.value = 'idle'
   saveStatus.value = ''
+  resetDiagnosis()
 }
 
 const handleSave = () => {
@@ -793,6 +869,68 @@ const handleSave = () => {
 
 .target-status.error {
   color: var(--color-error-bg, #dc2626);
+}
+
+.path-diagnosis {
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 10px;
+  background: var(--color-surface-soft, #f8fafc);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.diagnosis-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-text-secondary, #4b5563);
+}
+
+.diagnosis-row span {
+  flex-shrink: 0;
+  min-width: 84px;
+  font-weight: 600;
+}
+
+.diagnosis-row code,
+.diagnosis-details code {
+  word-break: break-all;
+  white-space: normal;
+  color: var(--color-text-primary, #374151);
+}
+
+.diagnosis-details {
+  font-size: 12px;
+  color: var(--color-text-secondary, #4b5563);
+}
+
+.diagnosis-details summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.diagnosis-details ul {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.diagnosis-details li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.diagnosis-details li.hit {
+  color: var(--color-success-bg, #16a34a);
 }
 
 /* 暗色主题下状态文字的可读性微调（其余颜色全部走 --color-* 变量自动继承） */

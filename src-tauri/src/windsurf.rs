@@ -1,8 +1,11 @@
 use crate::http_client::create_http_client;
+use base64::{Engine as _, engine::general_purpose};
 use rand::RngCore;
+use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::time::{Duration, sleep};
 use uuid::Uuid;
 
@@ -119,7 +122,9 @@ pub async fn check_for_updates() -> Result<AvwUpdateCheckResult, String> {
         current_version,
         latest_version: Some(latest_version),
         update_available,
-        release_url: release.html_url.or_else(|| Some(AVW_RELEASES_URL.to_string())),
+        release_url: release
+            .html_url
+            .or_else(|| Some(AVW_RELEASES_URL.to_string())),
         error: None,
     })
 }
@@ -2693,6 +2698,13 @@ fn resolve_storage_json_path(target: &WindsurfTarget) -> Result<PathBuf, String>
         .join("storage.json"))
 }
 
+fn resolve_state_vscdb_path(target: &WindsurfTarget) -> Result<PathBuf, String> {
+    Ok(resolve_windsurf_user_data_dir(target)?
+        .join("User")
+        .join("globalStorage")
+        .join("state.vscdb"))
+}
+
 /// Windsurf 安装目录内 `extension.js` 的相对路径。
 /// 通过它的存在性来判定某个目录是否确实是 Windsurf 安装目录。
 fn extension_js_relative_path() -> PathBuf {
@@ -2717,9 +2729,65 @@ fn extension_js_relative_path() -> PathBuf {
     }
 }
 
+fn extension_js_candidate_paths(root: &Path) -> Vec<PathBuf> {
+    let r = root;
+    let is_extension_js = r
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.eq_ignore_ascii_case("extension.js"))
+        .unwrap_or(false);
+    if is_extension_js {
+        return vec![r.to_path_buf()];
+    }
+    vec![
+        r.join(extension_js_relative_path()),
+        r.join("Contents")
+            .join("Resources")
+            .join("app")
+            .join("extensions")
+            .join("windsurf")
+            .join("dist")
+            .join("extension.js"),
+        r.join("resources")
+            .join("app")
+            .join("extensions")
+            .join("windsurf")
+            .join("dist")
+            .join("extension.js"),
+        r.join("app")
+            .join("extensions")
+            .join("windsurf")
+            .join("dist")
+            .join("extension.js"),
+        r.join("extensions")
+            .join("windsurf")
+            .join("dist")
+            .join("extension.js"),
+        r.join("dist").join("extension.js"),
+    ]
+}
+
+fn dedup_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for path in paths {
+        let key = path.to_string_lossy().to_string();
+        if seen.insert(key) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+fn locate_extension_js_under(root: &Path) -> Option<PathBuf> {
+    extension_js_candidate_paths(root)
+        .into_iter()
+        .find(|p| p.is_file())
+}
+
 /// 通过 `extension.js` 存在性校验某路径是否为有效 Windsurf 安装目录。
-fn is_valid_windsurf_install_dir(path: &PathBuf) -> bool {
-    path.join(extension_js_relative_path()).exists()
+fn is_valid_windsurf_install_dir(path: &Path) -> bool {
+    locate_extension_js_under(path).is_some()
 }
 
 /// 在 Windows 上通过 PowerShell COM 调用解析 `.lnk` 快捷方式的 TargetPath。
@@ -2744,88 +2812,289 @@ fn resolve_lnk_target(lnk_path: &PathBuf) -> Option<PathBuf> {
     }
 }
 
-/// 按常见路径探测指定客户端类型的 Windsurf 安装目录。命中即返回。
-fn detect_windsurf_install_path_impl(client_type: &str) -> Option<String> {
-    let target = WindsurfTarget {
-        client_type: Some(client_type.to_string()),
-        ..Default::default()
+fn client_display_name(client_type: &str) -> &'static str {
+    if client_type == "windsurf-next" {
+        "Windsurf - Next"
+    } else {
+        "Windsurf"
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn discover_mac_app_paths(app_name: &str) -> Vec<PathBuf> {
+    let query = format!("kMDItemFSName == '{}.app'", app_name);
+    std::process::Command::new("/usr/bin/mdfind")
+        .args(["-literal", &query])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(str::trim)
+                .filter(|s| s.ends_with(".app"))
+                .map(PathBuf::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
+fn discover_linux_install_roots(bin_name: &str) -> Vec<PathBuf> {
+    let out = std::process::Command::new("which")
+        .arg(bin_name)
+        .output()
+        .ok()
+        .filter(|o| o.status.success());
+    let Some(out) = out else {
+        return Vec::new();
     };
-    let dir_name = target.data_dir_name(); // "Windsurf" / "Windsurf - Next"
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let p = line.trim();
+            if p.is_empty() {
+                return None;
+            }
+            let real = fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p));
+            real.parent().map(|parent| parent.to_path_buf())
+        })
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn discover_win_install_roots(bin_name: &str) -> Vec<PathBuf> {
+    let out = command_hidden("where")
+        .arg(bin_name)
+        .output()
+        .ok()
+        .filter(|o| o.status.success());
+    let Some(out) = out else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let p = line.trim();
+            if p.is_empty() {
+                return None;
+            }
+            let real = fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p));
+            real.parent().map(|parent| parent.to_path_buf())
+        })
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn discover_win_from_registry(app_name: &str) -> Vec<PathBuf> {
+    let reg_paths = [
+        format!(
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\{}",
+            app_name
+        ),
+        format!(
+            r"HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\{}",
+            app_name
+        ),
+        format!(
+            r"HKLM\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\{}",
+            app_name
+        ),
+    ];
+    let mut roots = Vec::new();
+    for reg_path in reg_paths {
+        for value_name in ["InstallLocation", "DisplayIcon"] {
+            let out = command_hidden("reg")
+                .args(["query", &reg_path, "/v", value_name])
+                .output()
+                .ok()
+                .filter(|o| o.status.success());
+            let Some(out) = out else {
+                continue;
+            };
+            let text = String::from_utf8_lossy(&out.stdout);
+            for line in text.lines() {
+                if !line.contains("REG_SZ") {
+                    continue;
+                }
+                let parts: Vec<&str> = line.split("REG_SZ").collect();
+                let Some(raw) = parts.get(1).map(|s| s.trim()).filter(|s| !s.is_empty()) else {
+                    continue;
+                };
+                let cleaned = raw
+                    .trim_matches('"')
+                    .split(',')
+                    .next()
+                    .unwrap_or(raw)
+                    .trim()
+                    .to_string();
+                if value_name == "DisplayIcon" {
+                    if let Some(parent) = PathBuf::from(cleaned).parent() {
+                        roots.push(parent.to_path_buf());
+                    }
+                } else {
+                    roots.push(PathBuf::from(cleaned));
+                }
+            }
+        }
+    }
+    let mut expanded = Vec::new();
+    for root in roots {
+        expanded.push(root.clone());
+        if let Ok(entries) = fs::read_dir(&root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().to_string();
+                if path.is_dir() && name.starts_with("app-") {
+                    expanded.push(path);
+                }
+            }
+        }
+    }
+    expanded
+}
+
+fn candidate_install_roots(client_type: &str, custom_install_path: Option<&str>) -> Vec<PathBuf> {
+    let app_name = client_display_name(client_type);
+    let mut candidates = Vec::new();
+    if let Some(custom) = custom_install_path.map(str::trim).filter(|s| !s.is_empty()) {
+        candidates.push(PathBuf::from(custom));
+    }
 
     #[cfg(target_os = "windows")]
     {
-        // 1) 开始菜单快捷方式 → TargetPath → parent
+        let folder = if client_type == "windsurf-next" {
+            "Windsurf-Next"
+        } else {
+            "Windsurf"
+        };
         if let Ok(appdata) = std::env::var("APPDATA") {
             let start_menu = PathBuf::from(appdata)
                 .join("Microsoft")
                 .join("Windows")
                 .join("Start Menu")
                 .join("Programs")
-                .join(dir_name);
+                .join(app_name);
             if let Ok(entries) = fs::read_dir(&start_menu) {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.extension().and_then(|s| s.to_str()) == Some("lnk") {
                         if let Some(exe) = resolve_lnk_target(&path) {
                             if let Some(parent) = exe.parent() {
-                                let root = parent.to_path_buf();
-                                if is_valid_windsurf_install_dir(&root) {
-                                    return Some(root.to_string_lossy().to_string());
-                                }
+                                candidates.push(parent.to_path_buf());
                             }
                         }
                     }
                 }
             }
         }
-
-        // 2) 常见安装路径
-        let mut candidates: Vec<PathBuf> = Vec::new();
         if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            candidates.push(PathBuf::from(local).join("Programs").join(dir_name));
+            candidates.push(PathBuf::from(local).join("Programs").join(folder));
         }
-        candidates.push(PathBuf::from("C:\\Program Files").join(dir_name));
-        candidates.push(PathBuf::from("C:\\Program Files (x86)").join(dir_name));
-
-        for c in candidates {
-            if is_valid_windsurf_install_dir(&c) {
-                return Some(c.to_string_lossy().to_string());
-            }
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            candidates.push(PathBuf::from(program_files).join(folder));
         }
+        if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
+            candidates.push(PathBuf::from(program_files_x86).join(folder));
+        }
+        candidates.push(PathBuf::from("C:\\Program Files").join(folder));
+        candidates.push(PathBuf::from("C:\\Program Files (x86)").join(folder));
+        for drive in ["D:", "E:", "F:", "G:"] {
+            candidates.push(PathBuf::from(format!(
+                "{}\\Program Files\\{}",
+                drive, folder
+            )));
+            candidates.push(PathBuf::from(format!("{}\\{}", drive, folder)));
+        }
+        candidates.extend(discover_win_from_registry(app_name));
+        candidates.extend(discover_win_install_roots(folder));
     }
 
     #[cfg(target_os = "macos")]
     {
-        let app_name = format!("{}.app", dir_name);
-        let mut candidates: Vec<PathBuf> =
-            vec![PathBuf::from("/Applications").join(&app_name)];
+        let app_bundle = format!("{}.app", app_name);
+        candidates.push(PathBuf::from("/Applications").join(&app_bundle));
         if let Some(home) = dirs::home_dir() {
-            candidates.push(home.join("Applications").join(&app_name));
+            candidates.push(home.join("Applications").join(&app_bundle));
         }
-        for c in candidates {
-            if is_valid_windsurf_install_dir(&c) {
-                return Some(c.to_string_lossy().to_string());
-            }
-        }
+        candidates.extend(discover_mac_app_paths(app_name));
     }
 
     #[cfg(target_os = "linux")]
     {
-        let mut candidates: Vec<PathBuf> = vec![
-            PathBuf::from("/opt").join(dir_name),
-            PathBuf::from("/usr/share").join(dir_name.to_lowercase()),
-        ];
+        let dir_name = if client_type == "windsurf-next" {
+            "windsurf-next"
+        } else {
+            "windsurf"
+        };
+        candidates.push(PathBuf::from("/usr/share").join(dir_name));
+        candidates.push(PathBuf::from("/opt").join(app_name));
         if let Some(home) = dirs::home_dir() {
             candidates.push(home.join(".local").join("share").join(dir_name));
         }
-        for c in candidates {
-            if is_valid_windsurf_install_dir(&c) {
-                return Some(c.to_string_lossy().to_string());
-            }
-        }
+        candidates.extend(discover_linux_install_roots(dir_name));
     }
 
-    None
+    dedup_paths(candidates)
+}
+
+fn candidate_extension_paths(client_type: &str, custom_install_path: Option<&str>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for root in candidate_install_roots(client_type, custom_install_path) {
+        candidates.extend(extension_js_candidate_paths(&root));
+    }
+    dedup_paths(candidates)
+}
+
+fn current_platform_name() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "darwin"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "win32"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "linux"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        "unknown"
+    }
+}
+
+fn diagnose_install_paths(
+    client_type: &str,
+    custom_install_path: Option<&str>,
+) -> serde_json::Value {
+    let candidates = candidate_extension_paths(client_type, custom_install_path);
+    let existing: Vec<String> = candidates
+        .iter()
+        .filter(|p| p.is_file())
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    let picked = existing.first().cloned();
+    serde_json::json!({
+        "platform": current_platform_name(),
+        "client_type": client_type,
+        "custom_install_path": custom_install_path.unwrap_or(""),
+        "candidates": candidates
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect::<Vec<_>>(),
+        "existing": existing,
+        "picked": picked,
+    })
+}
+
+/// 按常见路径探测指定客户端类型的 Windsurf 安装目录。命中即返回。
+fn detect_windsurf_install_path_impl(client_type: &str) -> Option<String> {
+    candidate_install_roots(client_type, None)
+        .into_iter()
+        .find(|root| locate_extension_js_under(root).is_some())
+        .map(|root| root.to_string_lossy().to_string())
 }
 
 /// 重置 Windsurf 的 `telemetry.machineId` / `sqmId` / `devDeviceId` / `macMachineId`。
@@ -2963,6 +3232,111 @@ pub async fn reset_windsurf_machine_id(
     })
 }
 
+fn extract_json_string_value(text: &str, key: &str) -> Option<String> {
+    let needle = format!(r#""{}":""#, key);
+    let idx = text.rfind(&needle)?;
+    let start = idx + needle.len();
+    let rest = &text[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+fn read_json_str_field(node: &serde_json::Value, key: &str) -> Option<String> {
+    node.get(key)
+        .and_then(|v| {
+            if let Some(s) = v.as_str() {
+                Some(s.to_string())
+            } else {
+                v.as_array().and_then(|arr| {
+                    arr.iter()
+                        .find_map(|item| item.as_str().map(str::to_string))
+                })
+            }
+        })
+        .filter(|s| !s.is_empty())
+}
+
+fn parse_current_login_user_status(base64_value: &str) -> (Option<String>, Option<String>) {
+    let decoded = match general_purpose::STANDARD.decode(base64_value) {
+        Ok(v) => v,
+        Err(_) => return (None, None),
+    };
+    let mut parser = WindsurfProtoParser::new(&decoded);
+    let parsed = match parser.parse_message() {
+        Ok(v) => v,
+        Err(_) => return (None, None),
+    };
+    (
+        read_json_str_field(&parsed, "string_7"),
+        read_json_str_field(&parsed, "string_5"),
+    )
+}
+
+#[tauri::command]
+pub fn windsurf_get_current_login(
+    windsurf_target: Option<WindsurfTarget>,
+) -> Result<serde_json::Value, String> {
+    let target = windsurf_target.unwrap_or_default();
+    let state_db_path = resolve_state_vscdb_path(&target)?;
+    let fail = |msg: String| {
+        serde_json::json!({
+            "success": false,
+            "email": null,
+            "devin_account_id": null,
+            "session_token": null,
+            "state_db_path": state_db_path.to_string_lossy().to_string(),
+            "error": msg,
+        })
+    };
+
+    if !state_db_path.exists() {
+        return Ok(fail(format!(
+            "state.vscdb 不存在，请确认 Windsurf 已启动并登录过: {}",
+            state_db_path.display()
+        )));
+    }
+
+    let conn = match Connection::open_with_flags(&state_db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        Ok(conn) => conn,
+        Err(e) => return Ok(fail(format!("打开 state.vscdb 失败: {}", e))),
+    };
+    let raw: String = match conn.query_row(
+        "SELECT value FROM ItemTable WHERE key = ?1 LIMIT 1",
+        ["windsurfAuthStatus"],
+        |row| row.get(0),
+    ) {
+        Ok(v) => v,
+        Err(e) => return Ok(fail(format!("读取 windsurfAuthStatus 失败: {}", e))),
+    };
+
+    let parsed = serde_json::from_str::<serde_json::Value>(&raw).ok();
+    let session_token = parsed
+        .as_ref()
+        .and_then(|v| v.get("apiKey"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| extract_json_string_value(&raw, "apiKey"));
+    let user_status_base64 = parsed
+        .as_ref()
+        .and_then(|v| v.get("userStatusProtoBinaryBase64"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| extract_json_string_value(&raw, "userStatusProtoBinaryBase64"));
+    let (email, devin_account_id) = user_status_base64
+        .as_deref()
+        .map(parse_current_login_user_status)
+        .unwrap_or((None, None));
+
+    Ok(serde_json::json!({
+        "success": email.is_some() || session_token.is_some(),
+        "email": email,
+        "devin_account_id": devin_account_id,
+        "session_token": session_token,
+        "state_db_path": state_db_path.to_string_lossy().to_string(),
+        "error": null,
+    }))
+}
+
 /// 获取 Windsurf 订阅 / 用量信息（GetPlanStatus）。
 ///
 /// 请求格式对齐官网前端 & chaogei/windsurf-account-manager-simple：
@@ -2995,10 +3369,13 @@ pub async fn windsurf_refresh_credits(
         .map(str::trim)
         .filter(|s| s.starts_with("auth1_"))
         .map(|s| s.to_string());
-    let use_auth1 =
-        trimmed.starts_with("auth1_") || trimmed.starts_with("devin-session-token$") || explicit_auth1.is_some();
+    let use_auth1 = trimmed.starts_with("auth1_")
+        || trimmed.starts_with("devin-session-token$")
+        || explicit_auth1.is_some();
     if !use_auth1 {
-        return Ok(fail("仅支持 auth1_ 或 devin-session-token$ 开头的 Token".to_string()));
+        return Ok(fail(
+            "仅支持 auth1_ 或 devin-session-token$ 开头的 Token".to_string(),
+        ));
     }
 
     // 构造鉴权上下文
@@ -3303,24 +3680,16 @@ pub async fn windsurf_switch_account(
     };
 
     if trimmed.starts_with("auth1_") {
-        let mut result = switch_account_via_auth1(
-            trimmed,
-            devin_account_id,
-            devin_primary_org_id,
-            &target,
-        )
-        .await?;
+        let mut result =
+            switch_account_via_auth1(trimmed, devin_account_id, devin_primary_org_id, &target)
+                .await?;
         result.machine_id_reset = Some(machine_id_reset);
         result.machine_id_reset_error = machine_id_reset_error;
         Ok(result)
     } else {
-        let mut result = switch_account_via_session(
-            trimmed,
-            devin_account_id,
-            devin_primary_org_id,
-            &target,
-        )
-        .await?;
+        let mut result =
+            switch_account_via_session(trimmed, devin_account_id, devin_primary_org_id, &target)
+                .await?;
         result.machine_id_reset = Some(machine_id_reset);
         result.machine_id_reset_error = machine_id_reset_error;
         Ok(result)
@@ -3503,6 +3872,22 @@ pub fn detect_windsurf_install_path(client_type: Option<String>) -> Option<Strin
     detect_windsurf_install_path_impl(ct)
 }
 
+#[tauri::command]
+pub fn diagnose_windsurf_install_paths(
+    client_type: Option<String>,
+    custom_install_path: Option<String>,
+) -> serde_json::Value {
+    let ct = match client_type.as_deref().map(str::trim) {
+        Some("windsurf-next") => "windsurf-next",
+        _ => "windsurf",
+    };
+    let custom = custom_install_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    diagnose_install_paths(ct, custom)
+}
+
 /// 校验用户输入的 Windsurf 安装路径是否有效（是否包含 `extension.js`）。
 #[tauri::command]
 pub fn validate_windsurf_install_path(path: String) -> bool {
@@ -3531,7 +3916,8 @@ pub fn validate_windsurf_install_path(path: String) -> bool {
 
 /// 三处补丁正则（识别"未打补丁"的原始结构）。三条都匹配不上即视为已打过当前版本补丁。
 const PATCH_PATTERN_URI_HANDLER: &str = r#"this\._uriHandler\.event\((\w+)=>\{"/refresh-authentication-session"===(\w+)\.path&&\(0,(\w+)\.refreshAuthenticationSession\)\(\)\}\)"#;
-const PATCH_PATTERN_TIMEOUT: &str = r#",new Promise\(\((\w+),(\w+)\)=>setTimeout\(\(\)=>\{(\w+)\(new (\w+)\)\},18e4\)\)"#;
+const PATCH_PATTERN_TIMEOUT: &str =
+    r#",new Promise\(\((\w+),(\w+)\)=>setTimeout\(\(\)=>\{(\w+)\(new (\w+)\)\},18e4\)\)"#;
 const PATCH_PATTERN_DIFF_ACCOUNT_PROMPT: &str = r#"if\("Yes"===await (\w+)\.window\.showWarningMessage\("Are you sure you want to log in using a different account\?",\{modal:!0\},"Yes"\)\)"#;
 /// 当前版本注入代码独有的特征字符串，用于辅助判别"已安装的是当前版本还是历史/第三方版本"
 const PATCH_CURRENT_VERSION_MARKER: &str = "Failed to handle OAuth callback";
@@ -3539,26 +3925,63 @@ const PATCH_CURRENT_VERSION_MARKER: &str = "Failed to handle OAuth callback";
 /// 把 `WindsurfTarget` 解析成补丁要操作的安装根路径（同时返回 client_type 供后续重启）。
 fn resolve_install_path_for_patch(target: &WindsurfTarget) -> Result<(PathBuf, String), String> {
     let client_type = target.normalized_client_type().to_string();
-
-    let candidate = target
-        .install_path
-        .as_ref()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .or_else(|| detect_windsurf_install_path_impl(&client_type));
-
-    match candidate {
-        Some(p) => {
-            let path = PathBuf::from(p);
-            if !is_valid_windsurf_install_dir(&path) {
-                return Err(format!(
-                    "未在 {:?} 找到 extension.js，请确认安装路径是否正确",
-                    path
-                ));
-            }
-            Ok((path, client_type))
+    let custom = target.install_path.as_deref();
+    for root in candidate_install_roots(&client_type, custom) {
+        if locate_extension_js_under(&root).is_some() {
+            return Ok((root, client_type));
         }
-        None => Err("未能定位 Windsurf 安装路径，请先在设置中填写或检测".to_string()),
+    }
+
+    let tried = candidate_extension_paths(&client_type, custom);
+    let preview = tried
+        .iter()
+        .take(5)
+        .map(|p| format!("  · {}", p.display()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let more = if tried.len() > 5 {
+        format!("\n  · ...（共 {} 个候选）", tried.len())
+    } else {
+        String::new()
+    };
+    if preview.is_empty() {
+        Err("未能定位 Windsurf 安装路径，请先在设置中填写或检测".to_string())
+    } else {
+        Err(format!(
+            "未找到 Windsurf 内置 extension.js，请确认安装路径是否正确。已尝试：\n{}{}",
+            preview, more
+        ))
+    }
+}
+
+fn resolve_extension_file_for_patch(
+    target: &WindsurfTarget,
+) -> Result<(PathBuf, PathBuf, String), String> {
+    let (install_path, client_type) = resolve_install_path_for_patch(target)?;
+    let extension_file = locate_extension_js_under(&install_path).ok_or_else(|| {
+        format!(
+            "未在 {} 找到 extension.js，请确认安装路径是否正确",
+            install_path.display()
+        )
+    })?;
+    let restart_root = if install_path.is_file() {
+        extension_install_root(&extension_file)
+            .or_else(|| extension_file.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| install_path.clone())
+    } else {
+        install_path
+    };
+    Ok((restart_root, extension_file, client_type))
+}
+
+fn extension_install_root(extension_file: &Path) -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        extension_file.ancestors().nth(7).map(|p| p.to_path_buf())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        extension_file.ancestors().nth(6).map(|p| p.to_path_buf())
     }
 }
 
@@ -3617,6 +4040,137 @@ fn is_windsurf_process_running(client_type: &str) -> bool {
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
+    }
+}
+
+fn process_matches_client(process_name: &str, client_type: &str) -> bool {
+    let normalized = process_name
+        .trim()
+        .trim_end_matches(".exe")
+        .trim()
+        .to_ascii_lowercase();
+    if client_type == "windsurf-next" {
+        normalized == "windsurf - next" || normalized == "windsurf-next"
+    } else {
+        normalized == "windsurf"
+    }
+}
+
+fn frontmost_process_name() -> Result<Option<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let out = std::process::Command::new("osascript")
+            .args([
+                "-e",
+                r#"tell application "System Events" to get name of first application process whose frontmost is true"#,
+            ])
+            .output()
+            .map_err(|e| format!("检测前台窗口失败: {}", e))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Err(if err.is_empty() {
+                "检测前台窗口失败".to_string()
+            } else {
+                err
+            });
+        }
+        let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        return Ok((!name.is_empty()).then_some(name));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let script = r#"
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class Win32 {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+}
+"@
+$hwnd = [Win32]::GetForegroundWindow()
+$pid = 0
+[void][Win32]::GetWindowThreadProcessId($hwnd, [ref]$pid)
+if ($pid -gt 0) { (Get-Process -Id $pid).ProcessName }
+"#;
+        let out = command_hidden("powershell")
+            .args(["-NoProfile", "-Command", script])
+            .output()
+            .map_err(|e| format!("检测前台窗口失败: {}", e))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Err(if err.is_empty() {
+                "检测前台窗口失败".to_string()
+            } else {
+                err
+            });
+        }
+        let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        return Ok((!name.is_empty()).then_some(name));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let pid_out = std::process::Command::new("xdotool")
+            .args(["getwindowfocus", "getwindowpid"])
+            .output()
+            .map_err(|e| format!("检测前台窗口失败: {}", e))?;
+        if !pid_out.status.success() {
+            return Err("检测前台窗口失败：xdotool 不可用或当前环境不支持".to_string());
+        }
+        let pid = String::from_utf8_lossy(&pid_out.stdout).trim().to_string();
+        if pid.is_empty() {
+            return Ok(None);
+        }
+        let name_out = std::process::Command::new("ps")
+            .args(["-p", &pid, "-o", "comm="])
+            .output()
+            .map_err(|e| format!("读取前台进程失败: {}", e))?;
+        let name = String::from_utf8_lossy(&name_out.stdout).trim().to_string();
+        return Ok((!name.is_empty()).then_some(name));
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+pub fn windsurf_get_window_status(
+    windsurf_target: Option<WindsurfTarget>,
+) -> Result<serde_json::Value, String> {
+    let target = windsurf_target.unwrap_or_default();
+    let client_type = target.normalized_client_type();
+    let running = is_windsurf_process_running(client_type);
+    match frontmost_process_name() {
+        Ok(frontmost_process) => {
+            let frontmost = frontmost_process
+                .as_deref()
+                .map(|name| process_matches_client(name, client_type))
+                .unwrap_or(false);
+            Ok(serde_json::json!({
+                "success": true,
+                "platform": current_platform_name(),
+                "client_type": client_type,
+                "process_name": windsurf_process_name(client_type),
+                "running": running,
+                "frontmost": frontmost,
+                "frontmost_process": frontmost_process,
+                "error": null,
+            }))
+        }
+        Err(e) => Ok(serde_json::json!({
+            "success": false,
+            "platform": current_platform_name(),
+            "client_type": client_type,
+            "process_name": windsurf_process_name(client_type),
+            "running": running,
+            "frontmost": false,
+            "frontmost_process": null,
+            "error": e,
+        })),
     }
 }
 
@@ -3690,8 +4244,7 @@ pub fn check_seamless_patch_status(
     windsurf_target: Option<WindsurfTarget>,
 ) -> Result<serde_json::Value, String> {
     let target = windsurf_target.unwrap_or_default();
-    let (install_path, _client_type) = resolve_install_path_for_patch(&target)?;
-    let extension_file = install_path.join(extension_js_relative_path());
+    let (install_path, extension_file, _client_type) = resolve_extension_file_for_patch(&target)?;
 
     if !extension_file.exists() {
         return Ok(serde_json::json!({
@@ -3707,10 +4260,10 @@ pub fn check_seamless_patch_status(
     let content = fs::read_to_string(&extension_file)
         .map_err(|e| format!("读取 extension.js 失败: {}", e))?;
 
-    let p1 = regex::Regex::new(PATCH_PATTERN_URI_HANDLER)
-        .map_err(|e| format!("正则编译失败: {}", e))?;
-    let p2 = regex::Regex::new(PATCH_PATTERN_TIMEOUT)
-        .map_err(|e| format!("正则编译失败: {}", e))?;
+    let p1 =
+        regex::Regex::new(PATCH_PATTERN_URI_HANDLER).map_err(|e| format!("正则编译失败: {}", e))?;
+    let p2 =
+        regex::Regex::new(PATCH_PATTERN_TIMEOUT).map_err(|e| format!("正则编译失败: {}", e))?;
     let p3 = regex::Regex::new(PATCH_PATTERN_DIFF_ACCOUNT_PROMPT)
         .map_err(|e| format!("正则编译失败: {}", e))?;
 
@@ -3727,6 +4280,8 @@ pub fn check_seamless_patch_status(
         "oauth_handler": !p1_orig,
         "timeout_removed": !p2_orig,
         "prompt_bypass": !p3_orig,
+        "install_path": install_path.to_string_lossy().to_string(),
+        "extension_path": extension_file.to_string_lossy().to_string(),
     }))
 }
 
@@ -3736,8 +4291,7 @@ pub async fn apply_seamless_patch(
     windsurf_target: Option<WindsurfTarget>,
 ) -> Result<serde_json::Value, String> {
     let target = windsurf_target.unwrap_or_default();
-    let (install_path, client_type) = resolve_install_path_for_patch(&target)?;
-    let extension_file = install_path.join(extension_js_relative_path());
+    let (install_path, extension_file, client_type) = resolve_extension_file_for_patch(&target)?;
     let parent_dir = extension_file
         .parent()
         .ok_or_else(|| "无法获取 extension.js 所在目录".to_string())?
@@ -3746,10 +4300,10 @@ pub async fn apply_seamless_patch(
     let content = fs::read_to_string(&extension_file)
         .map_err(|e| format!("读取 extension.js 失败: {}", e))?;
 
-    let p1 = regex::Regex::new(PATCH_PATTERN_URI_HANDLER)
-        .map_err(|e| format!("正则编译失败: {}", e))?;
-    let p2 = regex::Regex::new(PATCH_PATTERN_TIMEOUT)
-        .map_err(|e| format!("正则编译失败: {}", e))?;
+    let p1 =
+        regex::Regex::new(PATCH_PATTERN_URI_HANDLER).map_err(|e| format!("正则编译失败: {}", e))?;
+    let p2 =
+        regex::Regex::new(PATCH_PATTERN_TIMEOUT).map_err(|e| format!("正则编译失败: {}", e))?;
     let p3 = regex::Regex::new(PATCH_PATTERN_DIFF_ACCOUNT_PROMPT)
         .map_err(|e| format!("正则编译失败: {}", e))?;
 
@@ -3839,11 +4393,12 @@ pub async fn apply_seamless_patch(
     if modified == content {
         // pattern 命中却未替换 = 版本漂移，回滚备份并报错
         let _ = fs::remove_file(&backup_file);
-        return Err("正则匹配成功但替换无变化，疑似 Windsurf 版本与补丁不兼容，请升级 avw".to_string());
+        return Err(
+            "正则匹配成功但替换无变化，疑似 Windsurf 版本与补丁不兼容，请升级 avw".to_string(),
+        );
     }
 
-    fs::write(&extension_file, &modified)
-        .map_err(|e| format!("写入 extension.js 失败: {}", e))?;
+    fs::write(&extension_file, &modified).map_err(|e| format!("写入 extension.js 失败: {}", e))?;
 
     // 重启 Windsurf（仅当其在运行时）
     let restarted = restart_windsurf_after_patch(&install_path, &client_type).await?;
@@ -3868,8 +4423,7 @@ pub async fn restore_seamless_patch(
     windsurf_target: Option<WindsurfTarget>,
 ) -> Result<serde_json::Value, String> {
     let target = windsurf_target.unwrap_or_default();
-    let (install_path, client_type) = resolve_install_path_for_patch(&target)?;
-    let extension_file = install_path.join(extension_js_relative_path());
+    let (install_path, extension_file, client_type) = resolve_extension_file_for_patch(&target)?;
     let parent_dir = extension_file
         .parent()
         .ok_or_else(|| "无法获取 extension.js 所在目录".to_string())?

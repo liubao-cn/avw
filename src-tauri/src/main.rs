@@ -27,6 +27,7 @@ fn main() {
             windsurf::check_for_updates,
             windsurf::open_release_page,
             windsurf::reset_windsurf_machine_id,
+            windsurf::windsurf_get_current_login,
             windsurf::windsurf_refresh_credits,
             windsurf::windsurf_switch_account,
             windsurf::windsurf_post_auth,
@@ -35,7 +36,9 @@ fn main() {
             windsurf::windsurf_get_analytics,
             // Windsurf 安装路径识别：支持自定义安装位置 / Windsurf - Next
             windsurf::detect_windsurf_install_path,
+            windsurf::diagnose_windsurf_install_paths,
             windsurf::validate_windsurf_install_path,
+            windsurf::windsurf_get_window_status,
             // 无感切号补丁
             windsurf::check_seamless_patch_status,
             windsurf::apply_seamless_patch,

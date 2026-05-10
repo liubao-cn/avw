@@ -197,12 +197,25 @@ const statusChipClass = computed(() => {
   return 'neutral'
 })
 
+const isFreeAccount = computed(() => {
+  const text = [
+    props.account.plan_name,
+    props.account.teams_tier_name,
+    props.account.plan_type,
+    props.account.tier
+  ].filter(Boolean).join(' ').toLowerCase()
+  return /\bfree\b|免费/.test(text)
+})
+
 const statusClass = computed(() => {
   const s = (props.account.status || '').toLowerCase()
-  if (s === 'active') return 'status-ok'
-  if (s === 'inactive') return 'status-warn'
-  if (s === 'banned') return 'status-bad'
-  return 'status-neutral'
+  const classes = []
+  if (s === 'active') classes.push('status-ok')
+  else if (s === 'inactive') classes.push('status-warn')
+  else if (s === 'banned') classes.push('status-bad')
+  else classes.push('status-neutral')
+  if (isFreeAccount.value) classes.push('free-account')
+  return classes
 })
 
 const tokenStatusText = computed(() => {
@@ -292,6 +305,13 @@ const copyEmail = async () => {
 .account-card:hover {
   transform: translateY(-1px);
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.08);
+}
+
+.account-card.free-account {
+  border-style: dashed;
+  border-color: rgba(245, 158, 11, 0.75);
+  background:
+    linear-gradient(135deg, rgba(245, 158, 11, 0.08), rgba(255, 255, 255, 0.92));
 }
 
 .card-header {
@@ -676,6 +696,12 @@ const copyEmail = async () => {
 
 [data-theme='dark'] .account-card:hover {
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+}
+
+[data-theme='dark'] .account-card.free-account {
+  border-color: rgba(251, 191, 36, 0.75);
+  background:
+    linear-gradient(135deg, rgba(251, 191, 36, 0.12), rgba(30, 41, 59, 0.94));
 }
 
 [data-theme='dark'] .email-text {

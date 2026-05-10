@@ -27,11 +27,24 @@
               <span v-if="isRefreshing" class="sync-spinner"></span>
               {{ isRefreshing ? $t('windsurf.refreshing') : $t('windsurf.refreshAll') }}
             </button>
+            <button @click="showAutoSwitchDialog = true" class="btn small" :class="autoSwitchConfig.enabled ? 'success' : 'secondary'">
+              {{ $t('windsurf.autoSwitchTitle') }}
+            </button>
             <button v-if="!props.embedded" class="close-btn" @click="handleClose">×</button>
           </div>
         </div>
 
         <div class="modal-body">
+          <div class="auto-switch-banner" :class="{ enabled: autoSwitchConfig.enabled, busy: autoSwitchRuntime.busy }">
+            <div class="auto-switch-main">
+              <span class="auto-switch-dot"></span>
+              <span>{{ autoSwitchRuntime.message || $t('windsurf.autoSwitchIdle') }}</span>
+            </div>
+            <button class="select-btn" type="button" :disabled="autoSwitchRuntime.busy" @click="requestAutoSwitchCheck">
+              {{ $t('windsurf.autoSwitchCheckNow') }}
+            </button>
+          </div>
+
           <div v-if="isLoading" class="loading-state">
             <div class="spinner"></div>
             <p>{{ $t('windsurf.loading') }}</p>
@@ -278,6 +291,11 @@
                   <span>{{ $t('windsurf.deleteExpiredAccounts') }}</span>
                   <span class="condition-count">({{ expiredAccountsCount }})</span>
                 </label>
+                <label class="condition-item">
+                  <input type="checkbox" v-model="deleteFreeAccounts" />
+                  <span>{{ $t('windsurf.deleteFreeAccounts') }}</span>
+                  <span class="condition-count">({{ freeAccountsCount }})</span>
+                </label>
               </div>
 
               <div v-else class="manual-select">
@@ -289,6 +307,7 @@
                   <label v-for="account in accounts" :key="account.id || account.email" class="manual-item">
                     <input type="checkbox" :value="account.email" v-model="selectedForBatchDelete" />
                     <span class="account-email">{{ account.email }}</span>
+                    <span v-if="isFreeAccount(account)" class="tag free">{{ $t('windsurf.freeAccount') }}</span>
                     <span v-if="isNoCredits(account)" class="tag no-credits">{{ $t('windsurf.noCredits') }}</span>
                     <span v-if="isExpired(account)" class="tag expired">{{ $t('windsurf.expired') }}</span>
                   </label>
@@ -319,6 +338,87 @@
 
     <Teleport to="body">
       <Transition name="modal" appear>
+        <div v-if="showAutoSwitchDialog" class="import-overlay" @click="closeAutoSwitchDialog">
+          <div class="auto-switch-dialog" @click.stop>
+            <div class="dialog-header">
+              <h3>{{ $t('windsurf.autoSwitchTitle') }}</h3>
+              <button @click="closeAutoSwitchDialog" class="dialog-close">×</button>
+            </div>
+            <div class="dialog-body">
+              <p class="dialog-message">{{ $t('windsurf.autoSwitchIntro') }}</p>
+              <div class="auto-switch-form">
+                <label class="condition-item">
+                  <input type="checkbox" v-model="autoSwitchDraft.seamlessEnabled" />
+                  <span>{{ $t('windsurf.seamlessEnabled') }}</span>
+                </label>
+                <label class="condition-item">
+                  <input type="checkbox" v-model="autoSwitchDraft.seamlessAutoApply" />
+                  <span>{{ $t('windsurf.seamlessAutoApply') }}</span>
+                </label>
+                <label class="condition-item">
+                  <input type="checkbox" v-model="autoSwitchDraft.enabled" />
+                  <span>{{ $t('windsurf.autoSwitchEnabled') }}</span>
+                </label>
+                <div class="auto-switch-grid">
+                  <label>
+                    <span>{{ $t('windsurf.autoSwitchDailyThreshold') }}</span>
+                    <input v-model.number="autoSwitchDraft.dailyThresholdPercent" type="number" min="0" max="100" />
+                  </label>
+                  <label>
+                    <span>{{ $t('windsurf.autoSwitchWeeklyThreshold') }}</span>
+                    <input v-model.number="autoSwitchDraft.weeklyThresholdPercent" type="number" min="0" max="100" />
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  class="auto-switch-advanced-toggle"
+                  @click="autoSwitchDraft.advancedVisible = !autoSwitchDraft.advancedVisible"
+                >
+                  {{ autoSwitchDraft.advancedVisible ? $t('windsurf.autoSwitchHideAdvanced') : $t('windsurf.autoSwitchShowAdvanced') }}
+                </button>
+                <div v-if="autoSwitchDraft.advancedVisible" class="auto-switch-grid">
+                  <label>
+                    <span>{{ $t('windsurf.autoSwitchInterval') }}</span>
+                    <input v-model.number="autoSwitchDraft.intervalSeconds" type="number" min="15" />
+                  </label>
+                  <label>
+                    <span>{{ $t('windsurf.autoSwitchIdleInterval') }}</span>
+                    <input v-model.number="autoSwitchDraft.idleIntervalSeconds" type="number" min="30" />
+                  </label>
+                  <label>
+                    <span>{{ $t('windsurf.autoSwitchIdleChecks') }}</span>
+                    <input v-model.number="autoSwitchDraft.idleAfterUnchangedChecks" type="number" min="1" />
+                  </label>
+                  <label>
+                    <span>{{ $t('windsurf.autoSwitchCooldown') }}</span>
+                    <input v-model.number="autoSwitchDraft.cooldownSeconds" type="number" min="5" />
+                  </label>
+                  <label>
+                    <span>{{ $t('windsurf.autoSwitchAllExhaustedCooldown') }}</span>
+                    <input v-model.number="autoSwitchDraft.allExhaustedCooldownSeconds" type="number" min="60" />
+                  </label>
+                </div>
+              </div>
+              <p v-if="autoSwitchRuntime.message" class="dialog-message auto-switch-status-text">
+                {{ autoSwitchRuntime.message }}
+              </p>
+            </div>
+            <div class="dialog-footer">
+              <button @click="closeAutoSwitchDialog" class="btn-cancel" :disabled="autoSwitchRuntime.busy">
+                {{ $t('common.cancel') }}
+              </button>
+              <button @click="saveAutoSwitchSettings" class="btn-confirm" :disabled="autoSwitchRuntime.busy">
+                <span v-if="autoSwitchRuntime.busy" class="sync-spinner"></span>
+                {{ $t('windsurfTarget.save') }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <Teleport to="body">
+      <Transition name="modal" appear>
         <WindsurfAnalyticsDialog
           v-if="showAnalyticsDialog && analyticsAccount"
           :account="analyticsAccount"
@@ -338,6 +438,13 @@ import WindsurfAccountCard from './WindsurfAccountCard.vue'
 import WindsurfAnalyticsDialog from './WindsurfAnalyticsDialog.vue'
 import { useEscToClose } from '../composables/useEscToClose'
 import { buildInvokeTarget } from '../composables/windsurfTarget'
+import {
+  loadAutoSwitchConfig,
+  loadLastSwitchEmail,
+  normalizeAutoSwitchConfig,
+  saveAutoSwitchConfig,
+  saveLastSwitchEmail,
+} from '../composables/windsurfAutoSwitch'
 
 const props = defineProps({
   embedded: {
@@ -389,11 +496,42 @@ const isBatchDeleting = ref(false)
 const batchDeleteMode = ref('condition')
 const deleteNoCredits = ref(false)
 const deleteExpiredAccounts = ref(false)
+const deleteFreeAccounts = ref(false)
 const selectedForBatchDelete = ref([])
 
+const showAutoSwitchDialog = ref(false)
+const autoSwitchConfig = ref(loadAutoSwitchConfig())
+const autoSwitchDraft = ref({ ...autoSwitchConfig.value })
+const autoSwitchTimer = ref(null)
+const autoSwitchTimerMeta = ref({ dueAt: 0, lightProbe: false })
+const autoSwitchRuntime = ref({
+  busy: false,
+  idle: false,
+  unchangedChecks: 0,
+  lastQuotaSignature: '',
+  cooldownUntil: 0,
+  message: '',
+  lastCheckAt: null,
+  lastSwitchAt: null,
+  lastActivityWakeAt: null,
+  lastFullIdleCheckAt: 0,
+})
+
 const CACHE_KEY = 'windsurf_accounts_cache_v1'
+const AUTO_SWITCH_VERIFY_TIMEOUT_MS = 15000
+const AUTO_SWITCH_VERIFY_POLL_MS = 1000
+const AUTO_SWITCH_MAX_ATTEMPTS = 3
+const AUTO_SWITCH_FAILURE_BASE_MS = 60000
+const AUTO_SWITCH_FAILURE_MAX_MS = 900000
+const AUTO_SWITCH_ACTIVITY_WAKE_THROTTLE_MS = 60000
+const AUTO_SWITCH_ACTIVITY_WAKE_DELAY_SECONDS = 5
+const AUTO_SWITCH_ACTIVITY_WAKE_SKIP_WITHIN_SECONDS = 15
+const AUTO_SWITCH_IDLE_FRONTMOST_PROBE_SECONDS = 30
+const AUTO_SWITCH_COOLDOWN_FRONTMOST_PROBE_SECONDS = 15
 
 const toast = ref({ show: false, message: '', type: 'success' })
+const autoSwitchFailedUntil = new Map()
+const autoSwitchFailedCount = new Map()
 
 const showToast = (message, type = 'success') => {
   toast.value = { show: true, message, type }
@@ -450,6 +588,16 @@ const isNoCredits = (account) => {
   return (total - used) <= 0
 }
 
+const isFreeAccount = (account) => {
+  const text = [
+    account?.plan_name,
+    account?.teams_tier_name,
+    account?.plan_type,
+    account?.tier
+  ].filter(Boolean).join(' ').toLowerCase()
+  return /\bfree\b|免费/.test(text)
+}
+
 const isExpired = (account) => {
   if (!account.expires_at) return false
   return new Date(account.expires_at).getTime() < Date.now()
@@ -463,6 +611,10 @@ const expiredAccountsCount = computed(() => {
   return accounts.value.filter(a => isExpired(a)).length
 })
 
+const freeAccountsCount = computed(() => {
+  return accounts.value.filter(a => isFreeAccount(a)).length
+})
+
 const batchToDeleteCount = computed(() => {
   if (batchDeleteMode.value === 'manual') {
     return selectedForBatchDelete.value.length
@@ -473,6 +625,9 @@ const batchToDeleteCount = computed(() => {
   }
   if (deleteExpiredAccounts.value) {
     accounts.value.filter(a => isExpired(a)).forEach(a => toDelete.add(a.email))
+  }
+  if (deleteFreeAccounts.value) {
+    accounts.value.filter(a => isFreeAccount(a)).forEach(a => toDelete.add(a.email))
   }
   return toDelete.size
 })
@@ -490,6 +645,7 @@ const closeBatchDeleteDialog = () => {
   batchDeleteMode.value = 'condition'
   deleteNoCredits.value = false
   deleteExpiredAccounts.value = false
+  deleteFreeAccounts.value = false
   selectedForBatchDelete.value = []
 }
 
@@ -505,6 +661,9 @@ const executeBatchDelete = async () => {
     }
     if (deleteExpiredAccounts.value) {
       accounts.value.filter(a => isExpired(a)).forEach(a => toDelete.add(a.email))
+    }
+    if (deleteFreeAccounts.value) {
+      accounts.value.filter(a => isFreeAccount(a)).forEach(a => toDelete.add(a.email))
     }
     emailsToDelete = Array.from(toDelete)
   }
@@ -612,6 +771,428 @@ const saveCache = () => {
     const payload = accounts.value.map(sanitizeForCache)
     localStorage.setItem(CACHE_KEY, JSON.stringify(payload))
   } catch {
+  }
+}
+
+const normalizeEmail = (email) => String(email || '').trim().toLowerCase()
+
+const getQuotaPercent = (account, field) => {
+  const value = Number(account?.[field])
+  return Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : null
+}
+
+const quotaDecision = (account, config) => {
+  const daily = getQuotaPercent(account, 'daily_quota_remaining_percent')
+  const weekly = getQuotaPercent(account, 'weekly_quota_remaining_percent')
+  const hasSignal = daily !== null || weekly !== null
+  if (!hasSignal) {
+    return { hasSignal: false, shouldSwitch: false, reason: '' }
+  }
+  if (daily !== null && daily <= config.dailyThresholdPercent) {
+    return { hasSignal: true, shouldSwitch: true, reason: `${t('windsurf.dailyQuota')} ${daily}%` }
+  }
+  if (weekly !== null && weekly <= config.weeklyThresholdPercent) {
+    return { hasSignal: true, shouldSwitch: true, reason: `${t('windsurf.weeklyQuota')} ${weekly}%` }
+  }
+  return { hasSignal: true, shouldSwitch: false, reason: '' }
+}
+
+const quotaSignature = (account) => [
+  account?.daily_quota_remaining_percent ?? '',
+  account?.weekly_quota_remaining_percent ?? '',
+  account?.daily_quota_reset_at_unix ?? '',
+  account?.weekly_quota_reset_at_unix ?? '',
+].join('|')
+
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms))
+
+const setAutoSwitchMessage = (message) => {
+  autoSwitchRuntime.value.message = message
+}
+
+const clearAutoSwitchTimer = () => {
+  if (autoSwitchTimer.value) {
+    clearTimeout(autoSwitchTimer.value)
+    autoSwitchTimer.value = null
+  }
+  autoSwitchTimerMeta.value = { dueAt: 0, lightProbe: false }
+}
+
+const scheduleAutoSwitch = (delaySeconds, { lightProbe = false } = {}) => {
+  clearAutoSwitchTimer()
+  const config = autoSwitchConfig.value
+  if (!config.enabled) return
+  const safeDelay = Math.max(1, Math.round(delaySeconds))
+  const timer = setTimeout(() => {
+    autoSwitchTick()
+  }, safeDelay * 1000)
+  autoSwitchTimer.value = timer
+  autoSwitchTimerMeta.value = {
+    dueAt: Date.now() + safeDelay * 1000,
+    lightProbe,
+  }
+}
+
+const markAutoSwitchFailure = (email) => {
+  const key = normalizeEmail(email)
+  const count = (autoSwitchFailedCount.get(key) || 0) + 1
+  autoSwitchFailedCount.set(key, count)
+  const retryMs = Math.min(AUTO_SWITCH_FAILURE_BASE_MS * Math.pow(2, Math.min(count - 1, 4)), AUTO_SWITCH_FAILURE_MAX_MS)
+  autoSwitchFailedUntil.set(key, Date.now() + retryMs)
+}
+
+const markAutoSwitchSuccess = (email) => {
+  const key = normalizeEmail(email)
+  autoSwitchFailedCount.delete(key)
+  autoSwitchFailedUntil.delete(key)
+}
+
+const applySeamlessPatchIfNeeded = async (config, { silent = true } = {}) => {
+  if (!config.seamlessEnabled || !config.seamlessAutoApply) return true
+  const target = buildInvokeTarget()
+  try {
+    const status = await invoke('check_seamless_patch_status', {
+      windsurfTarget: target,
+      windsurf_target: target
+    })
+    if (status && status.installed && status.current_version !== false) return true
+    const resp = await invoke('apply_seamless_patch', {
+      windsurfTarget: target,
+      windsurf_target: target
+    })
+    const ok = !!(resp && resp.success !== false)
+    if (!ok && !silent) showToast(`${t('windsurf.seamlessAutoApplyFailed')}: ${resp?.error || ''}`.trim(), 'error')
+    return ok
+  } catch (e) {
+    if (!silent) showToast(`${t('windsurf.seamlessAutoApplyFailed')}: ${e.message || e}`, 'error')
+    return false
+  }
+}
+
+const refreshAutoSwitchAccount = async (account) => {
+  const ok = await handleRefreshCredits(account, { silentSuccess: true, silentError: true })
+  if (!ok) return null
+  return account
+}
+
+const getCurrentLoginEmail = async () => {
+  try {
+    const target = buildInvokeTarget()
+    const resp = await invoke('windsurf_get_current_login', {
+      windsurfTarget: target,
+      windsurf_target: target
+    })
+    if (resp && resp.success && resp.email) return normalizeEmail(resp.email)
+  } catch {
+  }
+  return ''
+}
+
+const getWindsurfWindowStatus = async () => {
+  try {
+    const target = buildInvokeTarget()
+    const resp = await invoke('windsurf_get_window_status', {
+      windsurfTarget: target,
+      windsurf_target: target
+    })
+    return resp && typeof resp === 'object' ? resp : null
+  } catch {
+    return null
+  }
+}
+
+const wakeAutoSwitchFromWindsurfActivity = async ({ allowCooldown = false } = {}) => {
+  const config = autoSwitchConfig.value
+  if (!config.enabled || autoSwitchRuntime.value.busy) return false
+  const now = Date.now()
+  const inCooldown = now < autoSwitchRuntime.value.cooldownUntil
+  if (!autoSwitchRuntime.value.idle && !(allowCooldown && inCooldown)) return false
+  if (inCooldown && !allowCooldown) return false
+  const lastWake = autoSwitchRuntime.value.lastActivityWakeAt || 0
+  const throttleMs = allowCooldown ? AUTO_SWITCH_COOLDOWN_FRONTMOST_PROBE_SECONDS * 1000 : AUTO_SWITCH_ACTIVITY_WAKE_THROTTLE_MS
+  if (now - lastWake < throttleMs) return false
+  const status = await getWindsurfWindowStatus()
+  if (!status || !status.running || !status.frontmost) return false
+  if (autoSwitchTimerMeta.value.dueAt) {
+    const remainingSeconds = Math.ceil((autoSwitchTimerMeta.value.dueAt - now) / 1000)
+    if (remainingSeconds > 0 && remainingSeconds <= AUTO_SWITCH_ACTIVITY_WAKE_SKIP_WITHIN_SECONDS) return false
+  }
+  autoSwitchRuntime.value.lastActivityWakeAt = now
+  autoSwitchRuntime.value.cooldownUntil = 0
+  autoSwitchRuntime.value.idle = false
+  setAutoSwitchMessage(t('windsurf.autoSwitchActivityWake'))
+  scheduleAutoSwitch(AUTO_SWITCH_ACTIVITY_WAKE_DELAY_SECONDS)
+  return true
+}
+
+const currentAccountForAutoSwitch = async () => {
+  const currentEmail = await getCurrentLoginEmail()
+  if (currentEmail) {
+    const matched = accounts.value.find(acc => normalizeEmail(acc.email) === currentEmail)
+    if (matched) return matched
+  }
+  const lastEmail = loadLastSwitchEmail()
+  if (lastEmail) {
+    const matched = accounts.value.find(acc => normalizeEmail(acc.email) === lastEmail)
+    if (matched) return matched
+  }
+  return accounts.value.find(acc => acc.auth_token) || null
+}
+
+const updateAutoSwitchIdle = (account, config) => {
+  const signature = quotaSignature(account)
+  if (signature && signature === autoSwitchRuntime.value.lastQuotaSignature) {
+    autoSwitchRuntime.value.unchangedChecks += 1
+  } else {
+    autoSwitchRuntime.value.lastQuotaSignature = signature
+    autoSwitchRuntime.value.unchangedChecks = 0
+  }
+  autoSwitchRuntime.value.idle = autoSwitchRuntime.value.unchangedChecks >= config.idleAfterUnchangedChecks
+}
+
+const enterAutoSwitchCooldown = (seconds, message) => {
+  autoSwitchRuntime.value.cooldownUntil = Date.now() + Math.max(1, seconds) * 1000
+  setAutoSwitchMessage(message)
+}
+
+const switchAccountInternal = async (account, { silent = false } = {}) => {
+  const before = toast.value
+  const ok = await handleSwitchAccount(account, { autoTriggered: true })
+  if (silent) toast.value = before
+  return ok
+}
+
+const verifyAutoSwitch = async (account, config) => {
+  const email = normalizeEmail(account.email)
+  const deadline = Date.now() + AUTO_SWITCH_VERIFY_TIMEOUT_MS
+  let lastReason = t('windsurf.autoSwitchVerifyTimeout')
+  while (Date.now() < deadline) {
+    await delay(AUTO_SWITCH_VERIFY_POLL_MS)
+    const currentEmail = await getCurrentLoginEmail()
+    if (currentEmail && currentEmail !== email) {
+      lastReason = t('windsurf.autoSwitchVerifyStillCurrent', { email: currentEmail })
+      continue
+    }
+    const refreshed = await refreshAutoSwitchAccount(account)
+    if (!refreshed) return { success: false, reason: t('windsurf.autoSwitchRefreshFailed') }
+    const decision = quotaDecision(refreshed, config)
+    if (!decision.hasSignal) return { success: false, reason: t('windsurf.autoSwitchNoQuotaSignal') }
+    if (decision.shouldSwitch) return { success: false, reason: decision.reason }
+    return { success: true }
+  }
+  return { success: false, reason: lastReason }
+}
+
+const trySwitchToNextAvailable = async (currentAccount, config, reason) => {
+  const currentEmail = normalizeEmail(currentAccount.email)
+  const currentIndex = accounts.value.findIndex(acc => normalizeEmail(acc.email) === currentEmail)
+  if (currentIndex < 0 || accounts.value.length < 2) {
+    enterAutoSwitchCooldown(config.allExhaustedCooldownSeconds, t('windsurf.autoSwitchNoCandidate'))
+    return false
+  }
+  let attempts = 0
+  let hasRetryableFailure = false
+  let lastFailure = ''
+  for (let offset = 1; offset < accounts.value.length; offset++) {
+    const candidate = accounts.value[(currentIndex + offset) % accounts.value.length]
+    const email = normalizeEmail(candidate.email)
+    if (!email || email === currentEmail || !candidate.auth_token) continue
+    if (isExpired(candidate) || isFreeAccount(candidate)) continue
+    const failedUntil = autoSwitchFailedUntil.get(email) || 0
+    if (failedUntil > Date.now()) {
+      hasRetryableFailure = true
+      continue
+    }
+    const refreshed = await refreshAutoSwitchAccount(candidate)
+    if (!refreshed) {
+      hasRetryableFailure = true
+      continue
+    }
+    const candidateDecision = quotaDecision(refreshed, config)
+    if (!candidateDecision.hasSignal) {
+      hasRetryableFailure = true
+      continue
+    }
+    if (candidateDecision.shouldSwitch) continue
+    if (attempts >= AUTO_SWITCH_MAX_ATTEMPTS) break
+    attempts += 1
+    await switchAccountInternal(refreshed, { silent: true })
+    const verified = await verifyAutoSwitch(refreshed, config)
+    if (!verified.success) {
+      markAutoSwitchFailure(email)
+      hasRetryableFailure = true
+      lastFailure = `${refreshed.email}: ${verified.reason || ''}`.trim()
+      continue
+    }
+    markAutoSwitchSuccess(email)
+    saveLastSwitchEmail(refreshed.email)
+    autoSwitchRuntime.value.lastSwitchAt = new Date().toISOString()
+    enterAutoSwitchCooldown(config.cooldownSeconds, t('windsurf.autoSwitchSwitched', { email: refreshed.email, reason }))
+    showToast(t('windsurf.autoSwitchSwitched', { email: refreshed.email, reason }), 'success')
+    return true
+  }
+  if (attempts > 0) {
+    enterAutoSwitchCooldown(config.allExhaustedCooldownSeconds, t('windsurf.autoSwitchManualRequired', { reason: lastFailure || reason }))
+    return false
+  }
+  if (hasRetryableFailure) {
+    enterAutoSwitchCooldown(config.cooldownSeconds, t('windsurf.autoSwitchDeferred'))
+    return false
+  }
+  enterAutoSwitchCooldown(config.allExhaustedCooldownSeconds, t('windsurf.autoSwitchNoCandidate'))
+  return false
+}
+
+const autoSwitchCheckOnce = async () => {
+  const config = autoSwitchConfig.value
+  if (!config.enabled) {
+    setAutoSwitchMessage(t('windsurf.autoSwitchDisabled'))
+    return
+  }
+  if (accounts.value.length === 0) {
+    setAutoSwitchMessage(t('windsurf.autoSwitchNoAccounts'))
+    return
+  }
+  const seamlessReady = await applySeamlessPatchIfNeeded(config, { silent: false })
+  if (!seamlessReady) {
+    setAutoSwitchMessage(t('windsurf.autoSwitchSeamlessRequired'))
+    autoSwitchConfig.value = saveAutoSwitchConfig({ ...config, enabled: false })
+    return
+  }
+  const now = Date.now()
+  if (now < autoSwitchRuntime.value.cooldownUntil) {
+    setAutoSwitchMessage(t('windsurf.autoSwitchCooling'))
+    return
+  }
+  const current = await currentAccountForAutoSwitch()
+  if (!current) {
+    setAutoSwitchMessage(t('windsurf.autoSwitchNoCurrent'))
+    return
+  }
+  autoSwitchRuntime.value.lastCheckAt = new Date().toISOString()
+  const refreshed = await refreshAutoSwitchAccount(current)
+  if (!refreshed) {
+    setAutoSwitchMessage(t('windsurf.autoSwitchRefreshFailed'))
+    return
+  }
+  saveLastSwitchEmail(refreshed.email)
+  updateAutoSwitchIdle(refreshed, config)
+  const decision = quotaDecision(refreshed, config)
+  if (!decision.hasSignal) {
+    setAutoSwitchMessage(t('windsurf.autoSwitchNoQuotaSignal'))
+    return
+  }
+  if (!decision.shouldSwitch) {
+    setAutoSwitchMessage(autoSwitchRuntime.value.idle ? t('windsurf.autoSwitchIdleMode') : t('windsurf.autoSwitchQuotaOk'))
+    return
+  }
+  autoSwitchRuntime.value.idle = false
+  autoSwitchRuntime.value.unchangedChecks = 0
+  await trySwitchToNextAvailable(refreshed, config, decision.reason)
+}
+
+const autoSwitchTick = async () => {
+  const lightProbe = !!autoSwitchTimerMeta.value.lightProbe
+  clearAutoSwitchTimer()
+  const config = autoSwitchConfig.value
+  if (!config.enabled || autoSwitchRuntime.value.busy) return
+  const now = Date.now()
+  const cooldownRemaining = Math.ceil((autoSwitchRuntime.value.cooldownUntil - now) / 1000)
+  if (lightProbe && cooldownRemaining > 0) {
+    const woke = await wakeAutoSwitchFromWindsurfActivity({ allowCooldown: true })
+    if (!woke) {
+      scheduleAutoSwitch(Math.min(AUTO_SWITCH_COOLDOWN_FRONTMOST_PROBE_SECONDS, cooldownRemaining), { lightProbe: true })
+    }
+    return
+  }
+  if (lightProbe && autoSwitchRuntime.value.idle) {
+    const woke = await wakeAutoSwitchFromWindsurfActivity()
+    if (!woke) {
+      const lastFullCheck = autoSwitchRuntime.value.lastFullIdleCheckAt || Date.now()
+      const fullCheckRemaining = Math.ceil((lastFullCheck + config.idleIntervalSeconds * 1000 - Date.now()) / 1000)
+      if (fullCheckRemaining <= 0) scheduleAutoSwitch(1)
+      else scheduleAutoSwitch(Math.min(AUTO_SWITCH_IDLE_FRONTMOST_PROBE_SECONDS, fullCheckRemaining), { lightProbe: true })
+    }
+    return
+  }
+  autoSwitchRuntime.value.busy = true
+  try {
+    await autoSwitchCheckOnce()
+  } catch (e) {
+    setAutoSwitchMessage(`${t('windsurf.autoSwitchCheckFailed')}: ${e.message || e}`)
+  } finally {
+    autoSwitchRuntime.value.busy = false
+    const latest = autoSwitchConfig.value
+    if (latest.enabled) {
+      const cooldownRemaining = Math.ceil((autoSwitchRuntime.value.cooldownUntil - Date.now()) / 1000)
+      if (cooldownRemaining > 0) {
+        scheduleAutoSwitch(Math.min(AUTO_SWITCH_COOLDOWN_FRONTMOST_PROBE_SECONDS, cooldownRemaining), { lightProbe: true })
+      }
+      else if (autoSwitchRuntime.value.idle) {
+        autoSwitchRuntime.value.lastFullIdleCheckAt = Date.now()
+        scheduleAutoSwitch(Math.min(AUTO_SWITCH_IDLE_FRONTMOST_PROBE_SECONDS, latest.idleIntervalSeconds), { lightProbe: true })
+      } else scheduleAutoSwitch(latest.intervalSeconds)
+    }
+  }
+}
+
+const startAutoSwitchService = async ({ immediate = false } = {}) => {
+  clearAutoSwitchTimer()
+  autoSwitchConfig.value = loadAutoSwitchConfig()
+  if (!autoSwitchConfig.value.enabled) {
+    setAutoSwitchMessage(t('windsurf.autoSwitchDisabled'))
+    return
+  }
+  const seamlessReady = await applySeamlessPatchIfNeeded(autoSwitchConfig.value, { silent: true })
+  if (!seamlessReady) {
+    setAutoSwitchMessage(t('windsurf.autoSwitchSeamlessRequired'))
+  } else {
+    setAutoSwitchMessage(t('windsurf.autoSwitchWaiting'))
+  }
+  scheduleAutoSwitch(immediate ? 2 : autoSwitchConfig.value.intervalSeconds)
+}
+
+const stopAutoSwitchService = () => {
+  clearAutoSwitchTimer()
+  autoSwitchRuntime.value.busy = false
+  autoSwitchRuntime.value.idle = false
+  autoSwitchRuntime.value.unchangedChecks = 0
+  autoSwitchRuntime.value.cooldownUntil = 0
+  autoSwitchRuntime.value.lastFullIdleCheckAt = 0
+  setAutoSwitchMessage(t('windsurf.autoSwitchDisabled'))
+}
+
+const requestAutoSwitchCheck = async () => {
+  if (autoSwitchRuntime.value.busy) return
+  autoSwitchRuntime.value.cooldownUntil = 0
+  autoSwitchRuntime.value.idle = false
+  await autoSwitchTick()
+}
+
+const closeAutoSwitchDialog = () => {
+  showAutoSwitchDialog.value = false
+  autoSwitchDraft.value = { ...autoSwitchConfig.value }
+}
+
+const saveAutoSwitchSettings = async () => {
+  const next = normalizeAutoSwitchConfig(autoSwitchDraft.value)
+  if (next.enabled) {
+    const ok = await applySeamlessPatchIfNeeded(next, { silent: false })
+    if (!ok) {
+      next.enabled = false
+      autoSwitchDraft.value.enabled = false
+      setAutoSwitchMessage(t('windsurf.autoSwitchSeamlessRequired'))
+    }
+  }
+  autoSwitchConfig.value = saveAutoSwitchConfig(next)
+  autoSwitchDraft.value = { ...autoSwitchConfig.value }
+  showAutoSwitchDialog.value = false
+  if (autoSwitchConfig.value.enabled) {
+    await startAutoSwitchService({ immediate: true })
+    showToast(t('windsurf.autoSwitchSavedEnabled'), 'success')
+  } else {
+    stopAutoSwitchService()
+    showToast(t('windsurf.autoSwitchSavedDisabled'), 'success')
   }
 }
 
@@ -1029,13 +1610,13 @@ const normalizeLocalItem = (item) => {
 
 const handleRefreshCredits = async (account, opts = {}) => {
   const { silentSuccess = false, silentError = false } = opts || {}
-  if (account.__refreshingCredits) return
+  if (account.__refreshingCredits) return false
   account.__refreshingCredits = true
 
   try {
     if (!account.auth_token) {
       if (!silentError) showToast(t('windsurf.noToken'), 'warning')
-      return
+      return false
     }
 
     const result = await invoke('windsurf_refresh_credits', {
@@ -1052,7 +1633,7 @@ const handleRefreshCredits = async (account, opts = {}) => {
     })
     if (!result || !result.success) {
       if (!silentError) showToast(`${t('windsurf.refreshCreditsFailed')}: ${result?.error || ''}`.trim(), 'error')
-      return
+      return false
     }
 
     account.plan_name = result.plan_name
@@ -1081,8 +1662,10 @@ const handleRefreshCredits = async (account, opts = {}) => {
     saveCache()
 
     if (!silentSuccess) showToast(t('windsurf.refreshCreditsSuccess'), 'success')
+    return true
   } catch (e) {
     if (!silentError) showToast(`${t('windsurf.refreshCreditsFailed')}: ${e.message || e}`, 'error')
+    return false
   } finally {
     account.__refreshingCredits = false
   }
@@ -1145,13 +1728,13 @@ const confirmDelete = async () => {
   }
 }
 
-const handleSwitchAccount = async (account) => {
-  if (account.__loggingIn) return
+const handleSwitchAccount = async (account, options = {}) => {
+  if (account.__loggingIn) return false
   account.__loggingIn = true
   try {
     if (!account.auth_token) {
       showToast(t('windsurf.missingCredentials'), 'error')
-      return
+      return false
     }
 
     const windsurfTarget = buildInvokeTarget()
@@ -1170,7 +1753,7 @@ const handleSwitchAccount = async (account) => {
 
     if (!resp || !resp.success) {
       showToast(`${t('windsurf.switchFailed')}: ${resp?.error || ''}`.trim(), 'error')
-      return
+      return false
     }
 
     // 回写：Auth1 路径会把新换的 session_token 和 devin_* 返回
@@ -1203,8 +1786,15 @@ const handleSwitchAccount = async (account) => {
     } else {
       showToast(t('windsurf.switchSuccess'), 'success')
     }
+    saveLastSwitchEmail(account.email)
+    if (autoSwitchConfig.value.enabled && !options.autoTriggered) {
+      enterAutoSwitchCooldown(autoSwitchConfig.value.cooldownSeconds, t('windsurf.autoSwitchManualCooldown'))
+      scheduleAutoSwitch(Math.min(AUTO_SWITCH_COOLDOWN_FRONTMOST_PROBE_SECONDS, autoSwitchConfig.value.cooldownSeconds), { lightProbe: true })
+    }
+    return true
   } catch (e) {
     showToast(`${t('windsurf.switchFailed')}: ${e.message || e}`, 'error')
+    return false
   } finally {
     account.__loggingIn = false
   }
@@ -1222,8 +1812,7 @@ const handleRefreshAll = async () => {
   const refreshOne = async (acc) => {
     try {
       if (acc.auth_token) {
-        await handleRefreshCredits(acc, { silentSuccess: true, silentError: true })
-        return true
+        return await handleRefreshCredits(acc, { silentSuccess: true, silentError: true })
       }
       return false
     } catch {
@@ -1269,6 +1858,9 @@ useEscToClose(() => showDeleteConfirm.value, () => {
 useEscToClose(() => showBatchDeleteDialog.value, () => {
   if (!isBatchDeleting.value) closeBatchDeleteDialog()
 })
+useEscToClose(() => showAutoSwitchDialog.value, () => {
+  if (!autoSwitchRuntime.value.busy) closeAutoSwitchDialog()
+})
 
 onMounted(() => {
   isLoading.value = true
@@ -1276,10 +1868,13 @@ onMounted(() => {
   accounts.value = cached
   isLoading.value = false
   document.addEventListener('click', handleClickOutside)
+  applySeamlessPatchIfNeeded(autoSwitchConfig.value, { silent: true })
+  startAutoSwitchService({ immediate: true })
 })
 
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside)
+  clearAutoSwitchTimer()
 })
 </script>
 
@@ -1409,6 +2004,48 @@ onUnmounted(() => {
   flex-direction: column;
   overflow: hidden;
   padding: 12px 18px 16px;
+}
+
+.auto-switch-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(148, 163, 184, 0.08);
+  font-size: 12px;
+  color: rgba(15, 23, 42, 0.72);
+}
+
+.auto-switch-banner.enabled {
+  border-color: rgba(16, 185, 129, 0.25);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.auto-switch-banner.busy .auto-switch-dot {
+  animation: pulseDot 1s ease-in-out infinite;
+}
+
+.auto-switch-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.auto-switch-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  background: rgba(148, 163, 184, 0.8);
+}
+
+.auto-switch-banner.enabled .auto-switch-dot {
+  background: #10b981;
 }
 
 .loading-state,
@@ -1688,6 +2325,15 @@ onUnmounted(() => {
   background: var(--primary-hover, #2563eb);
 }
 
+.btn.secondary {
+  background: rgba(0, 0, 0, 0.08);
+  color: rgba(0, 0, 0, 0.72);
+}
+
+.btn.secondary:hover {
+  background: rgba(0, 0, 0, 0.14);
+}
+
 .btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
@@ -1841,6 +2487,17 @@ onUnmounted(() => {
   }
 }
 
+@keyframes pulseDot {
+  0%, 100% {
+    opacity: 0.45;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.25);
+  }
+}
+
 .batch-delete-dialog {
   background: var(--card-bg, #fff);
   border-radius: 14px;
@@ -1850,6 +2507,69 @@ onUnmounted(() => {
   flex-direction: column;
   overflow: hidden;
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.18);
+}
+
+.auto-switch-dialog {
+  background: var(--card-bg, #fff);
+  border-radius: 14px;
+  width: min(640px, 92vw);
+  max-height: 84vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.18);
+}
+
+.auto-switch-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.auto-switch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.auto-switch-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.03);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.auto-switch-grid input {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.auto-switch-advanced-toggle {
+  align-self: flex-start;
+  border: none;
+  background: transparent;
+  color: var(--primary-color, #3b82f6);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.auto-switch-advanced-toggle:hover {
+  text-decoration: underline;
+}
+
+.auto-switch-status-text {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(59, 130, 246, 0.08);
 }
 
 .delete-mode-tabs {
@@ -1971,6 +2691,11 @@ onUnmounted(() => {
 
 .tag.expired {
   background: #ef4444;
+  color: white;
+}
+
+.tag.free {
+  background: #f59e0b;
   color: white;
 }
 
@@ -2130,6 +2855,7 @@ onUnmounted(() => {
 [data-theme='dark'] .modal-content,
 [data-theme='dark'] .import-dialog,
 [data-theme='dark'] .batch-delete-dialog,
+[data-theme='dark'] .auto-switch-dialog,
 [data-theme='dark'] .embedded-panel {
   background: var(--color-surface, #1e293b);
   color: var(--color-text-primary, #e2e8f0);
@@ -2230,6 +2956,28 @@ onUnmounted(() => {
 
 [data-theme='dark'] .dialog-message {
   color: var(--color-text-secondary, #94a3b8);
+}
+
+[data-theme='dark'] .auto-switch-banner {
+  border-color: rgba(148, 163, 184, 0.24);
+  background: rgba(148, 163, 184, 0.1);
+  color: var(--color-text-secondary, #cbd5f5);
+}
+
+[data-theme='dark'] .auto-switch-banner.enabled {
+  border-color: rgba(45, 212, 191, 0.28);
+  background: rgba(45, 212, 191, 0.1);
+}
+
+[data-theme='dark'] .auto-switch-grid label {
+  background: rgba(148, 163, 184, 0.1);
+  color: var(--color-text-primary, #e2e8f0);
+}
+
+[data-theme='dark'] .auto-switch-grid input {
+  background: var(--color-input-bg, rgba(15, 23, 42, 0.85));
+  border-color: var(--color-input-border, rgba(148, 163, 184, 0.35));
+  color: var(--color-text-primary, #e2e8f0);
 }
 
 [data-theme='dark'] .mode-tab {

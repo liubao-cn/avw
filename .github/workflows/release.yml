@@ -14,7 +14,110 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  prepare-release:
+    runs-on: ubuntu-22.04
+    outputs:
+      release_id: ${{ steps.release.outputs.result }}
+    steps:
+      - name: Ensure GitHub Release
+        id: release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_BODY: |
+            ## 本次更新亮点
+
+            - **优化当前账号定位体验**：定位当前账号按钮新增定位图标，按钮背景改为绿色渐变样式。
+            - **当前登录账号更醒目**：账号卡片参考插件版样式，使用绿色边框、内阴影和淡绿色背景突出当前登录账号。
+            - **自动切号体验增强**：默认检测间隔调整为 60 秒，并支持 Windsurf 前台活动在空闲/冷却期提前唤醒检测。
+            - **安装路径诊断增强**：支持列出 Windsurf `extension.js` 候选路径，方便排查无感切号补丁路径问题。
+
+            ## 下载前请先选对架构
+
+            **不同芯片的安装包不通用，下错了会闪退或装不上。** 不确定自己是哪个：
+
+            - **macOS**：苹果菜单 → 关于本机 → 看到 `芯片：Apple…` 选 `aarch64`，看到 `处理器：Intel…` 选 `x64`
+            - **Windows**：设置 → 系统 → 关于 → 系统类型；普通 PC / 笔记本一般选 `x64`
+            - **Linux**：主流 amd64 机器选 `amd64.deb` / `x86_64.rpm` / `amd64.AppImage`
+
+            ## 各平台对应文件
+
+            | 系统 | 安装包 |
+            |------|--------|
+            | macOS Apple Silicon (M1/M2/M3/M4) | `AVW_*_aarch64.dmg` |
+            | macOS Intel | `AVW_*_x64.dmg` |
+            | Windows x64 | `AVW_*_x64-setup.exe` 或 `AVW_*_x64_en-US.msi` |
+            | Windows ARM64 | `AVW_*_arm64-setup.exe` 或 `AVW_*_arm64_en-US.msi` |
+            | Linux Debian / Ubuntu | `AVW_*_amd64.deb` |
+            | Linux Fedora / RHEL | `AVW-*_x86_64.rpm` |
+            | Linux 其它 | `AVW_*_amd64.AppImage` |
+
+            ## macOS 首次启动：去掉隔离标记（必看）
+
+            App 未经过 Apple 公证，首次打开会提示 **"已损坏，无法打开"** 或 **"无法验证开发者"**。把 `.app` 拖进 `应用程序` 后，在「终端」执行一次：
+
+            ```bash
+            sudo xattr -rd com.apple.quarantine /Applications/AVW.app
+            ```
+
+            回车后输入开机密码即可正常打开，**只需执行一次**，后续升级无需再做。
+
+            ## Windows / Linux 提示
+
+            - **Windows**：SmartScreen 拦截时点 `更多信息` → `仍要运行`。
+            - **Linux (.deb)**：`sudo dpkg -i AVW_*_amd64.deb && sudo apt-get install -f`
+            - **Linux (.rpm)**：`sudo dnf install ./AVW-*_x86_64.rpm`
+            - **Linux (.AppImage)**：`chmod +x AVW_*_amd64.AppImage && ./AVW_*_amd64.AppImage`
+
+            ---
+
+            遇到问题或反馈，加作者微信：`_liubao`
+        with:
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const name = `Windsurf Manager ${tag}`;
+            const body = process.env.RELEASE_BODY;
+
+            try {
+              const { data } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              await github.rest.repos.updateRelease({
+                owner,
+                repo,
+                release_id: data.id,
+                name,
+                body,
+                draft: false,
+                prerelease: false,
+              });
+              return data.id;
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+            }
+
+            try {
+              const { data } = await github.rest.repos.createRelease({
+                owner,
+                repo,
+                tag_name: tag,
+                name,
+                body,
+                draft: false,
+                prerelease: false,
+              });
+              return data.id;
+            } catch (error) {
+              if (error.status !== 422) {
+                throw error;
+              }
+              const { data } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              return data.id;
+            }
+
   release:
+    needs: prepare-release
     strategy:
       fail-fast: false
       matrix:
@@ -83,59 +186,9 @@ jobs:
         run: npm ci
 
       - name: Build & Release
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Windsurf Manager ${{ github.ref_name }}
-          releaseBody: |
-            ## 本次更新亮点
-
-            - **修复 Windows 端 Auth1 导入仍报「411 LengthRequired」**：v1.5.1 把 `auth1_token` 迁到 header 后，`WindsurfPostAuth` 的 protobuf body 在 `org_id` 为空时变成了 0 字节。Windows 上 reqwest 走 schannel + HTTP/2，0-byte POST 既不发 `Content-Length: 0` 也不发 DATA frame，前置 CloudFront 转发到上游时丢失长度信息直接返回 `411` HTML 错误页（macOS 走 native-tls + HTTP/1.1 默认带 `Content-Length: 0` 所以表现不同）。本次让 `org_id` 即使为空也按 proto3 显式编码为 field 1，body 至少 2 字节，跨平台行为一致。
-            - **沿用 v1.5.1 修复**：适配 2026-04 后的 `WindsurfPostAuth` 协议升级，`auth1_token` 通过 `X-Devin-Auth1-Token` header 鉴权，导入 / 切号 / 刷新额度 / 查看分析全链路恢复。
-            - **历史版本主要特性**（沿用 v1.5.0）：支持 Windsurf - Next 预览版、自定义 Windsurf 安装路径、自定义用户数据目录、无感切号补丁等。
-
-            ## 下载前请先选对架构
-
-            **不同芯片的安装包不通用，下错了会闪退或装不上。** 不确定自己是哪个：
-
-            - **macOS**：苹果菜单 → 关于本机 → 看到 `芯片：Apple…` 选 `aarch64`，看到 `处理器：Intel…` 选 `x64`
-            - **Windows**：设置 → 系统 → 关于 → 系统类型；普通 PC / 笔记本一般选 `x64`
-            - **Linux**：主流 amd64 机器选 `amd64.deb` / `x86_64.rpm` / `amd64.AppImage`
-
-            ## 各平台对应文件
-
-            | 系统 | 安装包 |
-            |------|--------|
-            | macOS Apple Silicon (M1/M2/M3/M4) | `AVW_*_aarch64.dmg` |
-            | macOS Intel | `AVW_*_x64.dmg` |
-            | Windows x64 | `AVW_*_x64-setup.exe` 或 `AVW_*_x64_en-US.msi` |
-            | Windows ARM64 | `AVW_*_arm64-setup.exe` 或 `AVW_*_arm64_en-US.msi` |
-            | Linux Debian / Ubuntu | `AVW_*_amd64.deb` |
-            | Linux Fedora / RHEL | `AVW-*_x86_64.rpm` |
-            | Linux 其它 | `AVW_*_amd64.AppImage` |
-
-            ## macOS 首次启动：去掉隔离标记（必看）
-
-            App 未经过 Apple 公证，首次打开会提示 **"已损坏，无法打开"** 或 **"无法验证开发者"**。把 `.app` 拖进 `应用程序` 后，在「终端」执行一次：
-
-            ```bash
-            sudo xattr -rd com.apple.quarantine /Applications/AVW.app
-            ```
-
-            回车后输入开机密码即可正常打开，**只需执行一次**，后续升级无需再做。
-
-            ## Windows / Linux 提示
-
-            - **Windows**：SmartScreen 拦截时点 `更多信息` → `仍要运行`。
-            - **Linux (.deb)**：`sudo dpkg -i AVW_*_amd64.deb && sudo apt-get install -f`
-            - **Linux (.rpm)**：`sudo dnf install ./AVW-*_x86_64.rpm`
-            - **Linux (.AppImage)**：`chmod +x AVW_*_amd64.AppImage && ./AVW_*_amd64.AppImage`
-
-            ---
-
-            遇到问题或反馈，加作者微信：`_liubao`
-          releaseDraft: false
-          prerelease: false
+          releaseId: ${{ needs.prepare-release.outputs.release_id }}
           args: ${{ matrix.args }}

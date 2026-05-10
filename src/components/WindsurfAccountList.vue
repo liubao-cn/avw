@@ -116,6 +116,19 @@
                 </Transition>
               </div>
 
+              <button
+                @click="locateCurrentLoginAccount"
+                class="btn locate-account-btn small"
+                :disabled="locatingCurrentAccount || accounts.length === 0"
+                :title="$t('windsurf.locateCurrentAccount')"
+              >
+                <span v-if="locatingCurrentAccount" class="sync-spinner"></span>
+                <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M12 2a8 8 0 0 0-8 8c0 5.4 7 11.5 7.3 11.8a1 1 0 0 0 1.4 0C13 21.5 20 15.4 20 10a8 8 0 0 0-8-8zm0 11a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"/>
+                </svg>
+                {{ locatingCurrentAccount ? $t('windsurf.locatingCurrentAccount') : $t('windsurf.locateCurrentAccount') }}
+              </button>
+
               <button @click="showBatchDeleteDialog = true" class="batch-delete-icon-btn" :disabled="accounts.length === 0" :title="$t('windsurf.batchDelete')">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
@@ -126,11 +139,14 @@
             </div>
 
             <div class="account-grid-scroll">
-              <div class="account-grid" :style="gridStyle">
+              <div ref="accountGridRef" class="account-grid" :style="gridStyle">
                 <WindsurfAccountCard
                   v-for="account in filteredAccounts"
                   :key="account.id"
                   :account="account"
+                  :is-current-login="isCurrentLoginAccount(account)"
+                  :highlight-current-login="isHighlightedCurrentLoginAccount(account)"
+                  :data-account-email="normalizeEmail(account.email)"
                   @refresh-account="handleRefreshAccount"
                   @switch-account="handleSwitchAccount"
                   @delete-local="handleDeleteLocal"
@@ -431,7 +447,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useI18n } from 'vue-i18n'
 import WindsurfAccountCard from './WindsurfAccountCard.vue'
@@ -460,6 +476,11 @@ const accounts = ref([])
 const isLoading = ref(false)
 const isRefreshing = ref(false)
 const searchQuery = ref('')
+const accountGridRef = ref(null)
+const locatingCurrentAccount = ref(false)
+const currentLoginEmail = ref('')
+const highlightedLoginEmail = ref('')
+let currentLoginHighlightTimer = null
 
 // Auth1 Token 手动添加
 const showAuth1Dialog = ref(false)
@@ -776,6 +797,14 @@ const saveCache = () => {
 
 const normalizeEmail = (email) => String(email || '').trim().toLowerCase()
 
+const isCurrentLoginAccount = (account) => {
+  return Boolean(currentLoginEmail.value && normalizeEmail(account?.email) === currentLoginEmail.value)
+}
+
+const isHighlightedCurrentLoginAccount = (account) => {
+  return Boolean(highlightedLoginEmail.value && normalizeEmail(account?.email) === highlightedLoginEmail.value)
+}
+
 const getQuotaPercent = (account, field) => {
   const value = Number(account?.[field])
   return Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : null
@@ -886,6 +915,49 @@ const getCurrentLoginEmail = async () => {
   } catch {
   }
   return ''
+}
+
+const scrollToCurrentLoginAccount = async (email) => {
+  await nextTick()
+  const grid = accountGridRef.value
+  const selector = `[data-account-email="${CSS.escape(email)}"]`
+  const card = grid?.querySelector?.(selector)
+  if (!card) return false
+  card.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' })
+  highlightedLoginEmail.value = email
+  if (currentLoginHighlightTimer) clearTimeout(currentLoginHighlightTimer)
+  currentLoginHighlightTimer = setTimeout(() => {
+    if (highlightedLoginEmail.value === email) highlightedLoginEmail.value = ''
+    currentLoginHighlightTimer = null
+  }, 5000)
+  return true
+}
+
+const locateCurrentLoginAccount = async () => {
+  if (locatingCurrentAccount.value) return
+  locatingCurrentAccount.value = true
+  try {
+    const email = await getCurrentLoginEmail()
+    currentLoginEmail.value = email
+    if (!email) {
+      showToast(t('windsurf.currentLoginNotFound'), 'warning')
+      return
+    }
+    const matched = accounts.value.find(account => normalizeEmail(account.email) === email)
+    if (!matched) {
+      showToast(t('windsurf.currentLoginNotInList', { email }), 'warning')
+      return
+    }
+    const visible = filteredAccounts.value.some(account => normalizeEmail(account.email) === email)
+    if (!visible) searchQuery.value = ''
+    const scrolled = await scrollToCurrentLoginAccount(email)
+    if (scrolled) showToast(t('windsurf.currentLoginLocated', { email: matched.email || email }), 'success')
+    else showToast(t('windsurf.currentLoginLocatedButHidden', { email: matched.email || email }), 'warning')
+  } catch (e) {
+    showToast(`${t('windsurf.locateCurrentAccountFailed')}: ${e.message || e}`, 'error')
+  } finally {
+    locatingCurrentAccount.value = false
+  }
 }
 
 const getWindsurfWindowStatus = async () => {
@@ -1875,6 +1947,7 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside)
   clearAutoSwitchTimer()
+  if (currentLoginHighlightTimer) clearTimeout(currentLoginHighlightTimer)
 })
 </script>
 
@@ -2645,6 +2718,36 @@ onUnmounted(() => {
   background: rgba(0, 0, 0, 0.05);
 }
 
+.locate-account-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-color: rgba(16, 185, 129, 0.32);
+  background:
+    linear-gradient(
+      180deg,
+      rgba(16, 185, 129, 0.16) 0%,
+      rgba(16, 185, 129, 0.08) 100%
+    );
+  color: #047857;
+  font-weight: 700;
+}
+
+.locate-account-btn:hover:not(:disabled) {
+  border-color: rgba(16, 185, 129, 0.56);
+  background:
+    linear-gradient(
+      180deg,
+      rgba(16, 185, 129, 0.22) 0%,
+      rgba(16, 185, 129, 0.12) 100%
+    );
+  color: #065f46;
+}
+
+.locate-account-btn svg {
+  flex: 0 0 auto;
+}
+
 .manual-list {
   max-height: 200px;
   overflow-y: auto;
@@ -3016,6 +3119,28 @@ onUnmounted(() => {
 
 [data-theme='dark'] .select-btn:hover {
   background: rgba(148, 163, 184, 0.14);
+}
+
+[data-theme='dark'] .locate-account-btn {
+  border-color: rgba(45, 212, 191, 0.34);
+  background:
+    linear-gradient(
+      180deg,
+      rgba(45, 212, 191, 0.18) 0%,
+      rgba(45, 212, 191, 0.1) 100%
+    );
+  color: #5eead4;
+}
+
+[data-theme='dark'] .locate-account-btn:hover:not(:disabled) {
+  border-color: rgba(45, 212, 191, 0.58);
+  background:
+    linear-gradient(
+      180deg,
+      rgba(45, 212, 191, 0.24) 0%,
+      rgba(45, 212, 191, 0.14) 100%
+    );
+  color: #99f6e4;
 }
 
 [data-theme='dark'] .manual-list {

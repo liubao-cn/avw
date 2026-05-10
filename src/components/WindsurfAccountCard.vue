@@ -20,6 +20,7 @@
         </div>
       </div>
       <div class="status-badges">
+        <span v-if="isCurrentLogin" class="status-chip current-login">● {{ $t('windsurf.currentLogin') }}</span>
         <span class="status-chip" :class="statusChipClass">{{ statusText }}</span>
       </div>
     </div>
@@ -129,6 +130,14 @@ const props = defineProps({
   account: {
     type: Object,
     required: true
+  },
+  isCurrentLogin: {
+    type: Boolean,
+    default: false
+  },
+  highlightCurrentLogin: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -215,6 +224,8 @@ const statusClass = computed(() => {
   else if (s === 'banned') classes.push('status-bad')
   else classes.push('status-neutral')
   if (isFreeAccount.value) classes.push('free-account')
+  if (props.isCurrentLogin) classes.push('current-login-account')
+  if (props.highlightCurrentLogin) classes.push('current-login-highlight')
   return classes
 })
 
@@ -299,7 +310,7 @@ const copyEmail = async () => {
   border: 1px solid rgba(0, 0, 0, 0.06);
   border-radius: 12px;
   padding: 14px;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
 }
 
 .account-card:hover {
@@ -312,6 +323,22 @@ const copyEmail = async () => {
   border-color: rgba(245, 158, 11, 0.75);
   background:
     linear-gradient(135deg, rgba(245, 158, 11, 0.08), rgba(255, 255, 255, 0.92));
+}
+
+.account-card.current-login-account {
+  border-color: #10b981;
+  border-style: solid;
+  box-shadow: 0 0 0 1px #10b981 inset;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(16, 185, 129, 0.08) 0%,
+      var(--card-bg, #fff) 60%
+    );
+}
+
+.account-card.current-login-highlight {
+  animation: currentLoginPulse 1.2s ease-in-out 4;
 }
 
 .card-header {
@@ -448,6 +475,12 @@ const copyEmail = async () => {
 .status-chip.neutral {
   background: rgba(107, 114, 128, 0.14);
   color: #374151;
+}
+
+.status-chip.current-login {
+  background: #10b981;
+  color: #fff;
+  letter-spacing: 0.2px;
 }
 
 .card-body {
@@ -683,9 +716,24 @@ const copyEmail = async () => {
   }
 }
 
+.dialog-actions {
+  display: flex;
+  gap: 12px;
+}
+
+@keyframes currentLoginPulse {
+  0%, 100% {
+    transform: translateY(0);
+    box-shadow: 0 0 0 1px #10b981 inset;
+  }
+  50% {
+    transform: translateY(-2px);
+    box-shadow: 0 0 0 1px #10b981 inset, 0 0 0 3px rgba(16, 185, 129, 0.22), 0 16px 32px rgba(16, 185, 129, 0.16);
+  }
+}
+
 /* ============================== */
 /*  暗色主题统一覆盖               */
-/* ============================== */
 
 [data-theme='dark'] .account-card {
   background: var(--color-surface, #1e293b);
@@ -702,6 +750,17 @@ const copyEmail = async () => {
   border-color: rgba(251, 191, 36, 0.75);
   background:
     linear-gradient(135deg, rgba(251, 191, 36, 0.12), rgba(30, 41, 59, 0.94));
+}
+
+[data-theme='dark'] .account-card.current-login-account {
+  border-color: #10b981;
+  box-shadow: 0 0 0 1px #10b981 inset;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(16, 185, 129, 0.12) 0%,
+      var(--color-surface, #1e293b) 60%
+    );
 }
 
 [data-theme='dark'] .email-text {
@@ -806,5 +865,10 @@ const copyEmail = async () => {
 [data-theme='dark'] .status-chip.neutral {
   background: rgba(148, 163, 184, 0.2);
   color: var(--color-text-primary, #e2e8f0);
+}
+
+[data-theme='dark'] .status-chip.current-login {
+  background: #10b981;
+  color: #fff;
 }
 </style>

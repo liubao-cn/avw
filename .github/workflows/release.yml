@@ -21,14 +21,14 @@ jobs:
     steps:
       - name: Ensure GitHub Release
         id: release
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           RELEASE_BODY: |
             ## 本次更新亮点
 
-            - **自动切号稳定性增强**：自动切号轮询迁移到 Rust 后台执行，减少前端计时器被挂起导致的漏检。
-            - **当前账号自动定位优化**：自动切号成功后会同步刷新账号状态，并定位到切换后的账号。
-            - **侧边栏状态记忆**：手动折叠或展开侧边栏后会保存状态，拖动窗口大小不再自动改变侧边栏。
+            - **发布流程稳定性增强**：升级 GitHub Actions 官方 action 到 Node 24 兼容版本，并固定 Windows runner，降低镜像迁移期打包失败概率。
+            - **自动切号联动修复**：开启自动切号时会真实启用无感切号补丁和自动应用配置，不再只停留在界面勾选状态。
+            - **自动切号弹窗体验修复**：高级设置展开后内容区支持滚动，底部保存按钮始终可见。
             - **更新体验优化**：发现新版本时可展开查看主要更新内容，并按当前系统和架构直接下载对应安装包。
 
             ## 下载前请先选对架构
@@ -134,11 +134,11 @@ jobs:
             args: ""
             name: linux-x64
             rust-targets: x86_64-unknown-linux-gnu
-          - platform: windows-latest
+          - platform: windows-2022
             args: --target aarch64-pc-windows-msvc
             name: windows-arm64
             rust-targets: aarch64-pc-windows-msvc
-          - platform: windows-latest
+          - platform: windows-2022
             args: --target x86_64-pc-windows-msvc
             name: windows-x64
             rust-targets: x86_64-pc-windows-msvc
@@ -146,12 +146,12 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
 
       - name: Setup Rust

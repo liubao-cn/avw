@@ -2,7 +2,7 @@ import { ref } from 'vue'
 
 const STORAGE_KEY = 'windsurf_auto_switch_config_v1'
 const LAST_SWITCH_EMAIL_KEY = 'windsurf_last_switch_email_v1'
-const CONFIG_VERSION = 2
+const CONFIG_VERSION = 3
 
 export const DEFAULT_AUTO_SWITCH_CONFIG = {
   configVersion: CONFIG_VERSION,
@@ -58,6 +58,10 @@ export function normalizeAutoSwitchConfig(input = {}) {
   next.seamlessEnabled = next.seamlessEnabled !== false
   next.seamlessAutoApply = next.seamlessAutoApply !== false
   next.enabled = next.enabled === true
+  if (next.enabled) {
+    next.seamlessEnabled = true
+    next.seamlessAutoApply = true
+  }
   next.advancedVisible = next.advancedVisible === true
   for (const key of numberFields) {
     const [min, max] = limits[key]

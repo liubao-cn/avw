@@ -364,15 +364,15 @@
               <p class="dialog-message">{{ $t('windsurf.autoSwitchIntro') }}</p>
               <div class="auto-switch-form">
                 <label class="condition-item">
-                  <input type="checkbox" v-model="autoSwitchDraft.seamlessEnabled" />
+                  <input type="checkbox" v-model="autoSwitchDraft.seamlessEnabled" :disabled="autoSwitchDraft.enabled" />
                   <span>{{ $t('windsurf.seamlessEnabled') }}</span>
                 </label>
                 <label class="condition-item">
-                  <input type="checkbox" v-model="autoSwitchDraft.seamlessAutoApply" />
+                  <input type="checkbox" v-model="autoSwitchDraft.seamlessAutoApply" :disabled="autoSwitchDraft.enabled" />
                   <span>{{ $t('windsurf.seamlessAutoApply') }}</span>
                 </label>
                 <label class="condition-item">
-                  <input type="checkbox" v-model="autoSwitchDraft.enabled" />
+                  <input type="checkbox" v-model="autoSwitchDraft.enabled" @change="handleAutoSwitchEnabledChange" />
                   <span>{{ $t('windsurf.autoSwitchEnabled') }}</span>
                 </label>
                 <div class="auto-switch-grid">
@@ -1348,9 +1348,19 @@ const closeAutoSwitchDialog = () => {
   autoSwitchDraft.value = { ...autoSwitchConfig.value }
 }
 
+const handleAutoSwitchEnabledChange = () => {
+  if (!autoSwitchDraft.value.enabled) return
+  autoSwitchDraft.value.seamlessEnabled = true
+  autoSwitchDraft.value.seamlessAutoApply = true
+}
+
 const saveAutoSwitchSettings = async () => {
   const next = normalizeAutoSwitchConfig(autoSwitchDraft.value)
   if (next.enabled) {
+    next.seamlessEnabled = true
+    next.seamlessAutoApply = true
+    autoSwitchDraft.value.seamlessEnabled = true
+    autoSwitchDraft.value.seamlessAutoApply = true
     const ok = await applySeamlessPatchIfNeeded(next, { silent: false })
     if (!ok) {
       next.enabled = false

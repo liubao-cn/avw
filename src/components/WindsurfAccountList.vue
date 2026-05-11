@@ -623,9 +623,14 @@ const isFreeAccount = (account) => {
   return /\bfree\b|免费/.test(text)
 }
 
+const getExpireTimestamp = (account) => {
+  if (!account?.expires_at) return Number.POSITIVE_INFINITY
+  const timestamp = new Date(account.expires_at).getTime()
+  return Number.isFinite(timestamp) ? timestamp : Number.POSITIVE_INFINITY
+}
+
 const isExpired = (account) => {
-  if (!account.expires_at) return false
-  return new Date(account.expires_at).getTime() < Date.now()
+  return getExpireTimestamp(account) < Date.now()
 }
 
 const noCreditsAccountsCount = computed(() => {
@@ -735,12 +740,6 @@ const sortedAccounts = computed(() => {
     let comparison = 0
 
     if (sortType.value === 'expiry') {
-      const getExpireTimestamp = (acc) => {
-        if (acc.expires_at) {
-          return new Date(acc.expires_at).getTime()
-        }
-        return 0
-      }
       const dateA = getExpireTimestamp(a)
       const dateB = getExpireTimestamp(b)
       comparison = dateA - dateB
@@ -1150,19 +1149,28 @@ const verifyAutoSwitch = async (account, config) => {
 
 const trySwitchToNextAvailable = async (currentAccount, config, reason) => {
   const currentEmail = normalizeEmail(currentAccount.email)
-  const currentIndex = accounts.value.findIndex(acc => normalizeEmail(acc.email) === currentEmail)
-  if (currentIndex < 0 || accounts.value.length < 2) {
+  const hasCurrentAccount = accounts.value.some(acc => normalizeEmail(acc.email) === currentEmail)
+  if (!hasCurrentAccount || accounts.value.length < 2) {
     enterAutoSwitchCooldown(config.allExhaustedCooldownSeconds, t('windsurf.autoSwitchNoCandidate'))
     return false
   }
+  const candidates = accounts.value
+    .map((account, index) => ({ account, index }))
+    .filter(({ account }) => {
+      const email = normalizeEmail(account.email)
+      if (!email || email === currentEmail || !account.auth_token) return false
+      if (isExpired(account) || isFreeAccount(account)) return false
+      return true
+    })
+    .sort((a, b) => {
+      const expiresComparison = getExpireTimestamp(a.account) - getExpireTimestamp(b.account)
+      return expiresComparison || a.index - b.index
+    })
   let attempts = 0
   let hasRetryableFailure = false
   let lastFailure = ''
-  for (let offset = 1; offset < accounts.value.length; offset++) {
-    const candidate = accounts.value[(currentIndex + offset) % accounts.value.length]
+  for (const { account: candidate } of candidates) {
     const email = normalizeEmail(candidate.email)
-    if (!email || email === currentEmail || !candidate.auth_token) continue
-    if (isExpired(candidate) || isFreeAccount(candidate)) continue
     const failedUntil = autoSwitchFailedUntil.get(email) || 0
     if (failedUntil > Date.now()) {
       hasRetryableFailure = true
@@ -1971,6 +1979,9 @@ const handleSwitchAccount = async (account, options = {}) => {
       showToast(t('windsurf.switchSuccess'), 'success')
     }
     saveLastSwitchEmail(account.email)
+    if (!options.autoTriggered) {
+      await revealCurrentLoginAccount(account.email)
+    }
     if (autoSwitchConfig.value.enabled && !options.autoTriggered) {
       enterAutoSwitchCooldown(autoSwitchConfig.value.cooldownSeconds, t('windsurf.autoSwitchManualCooldown'))
       scheduleAutoSwitch(Math.min(AUTO_SWITCH_COOLDOWN_FRONTMOST_PROBE_SECONDS, autoSwitchConfig.value.cooldownSeconds), { lightProbe: true })

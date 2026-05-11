@@ -95,7 +95,6 @@
         </button>
         <button
           class="btn small success switch-btn"
-          :class="{ loading: account.__loggingIn }"
           type="button"
           :disabled="account.__updating || account.__loggingIn || !account.auth_token"
           @click.stop="emit('switch-account', account)"
@@ -658,12 +657,6 @@ const copyEmail = async () => {
   box-shadow: 0 6px 14px rgba(16, 185, 129, 0.24);
 }
 
-.switch-btn.loading {
-  background: linear-gradient(90deg, #10b981, #059669, #10b981);
-  background-size: 200% 100%;
-  animation: switchLoading 1.2s ease-in-out infinite;
-}
-
 .btn-label {
   transition: opacity 0.18s ease, transform 0.18s ease;
 }
@@ -704,15 +697,6 @@ const copyEmail = async () => {
 @keyframes spin {
   to {
     transform: rotate(360deg);
-  }
-}
-
-@keyframes switchLoading {
-  0% {
-    background-position: 0% 50%;
-  }
-  100% {
-    background-position: 200% 50%;
   }
 }
 

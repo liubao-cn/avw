@@ -34,7 +34,7 @@ export default {
     loading: 'Loading...',
     empty: 'No accounts',
     emptyHint: 'Click an import button to add local Windsurf accounts',
-    searchPlaceholder: 'Search email, name, status...',
+    searchPlaceholder: 'Search email, auth_token, or plan (Free/Pro/Trial)...',
     refreshAll: 'Refresh All',
     refreshing: 'Refreshing...',
     refreshAllSuccess: 'Successfully refreshed {count} accounts',

@@ -34,7 +34,7 @@ export default {
     loading: '加载中...',
     empty: '暂无账号',
     emptyHint: '点击导入按钮添加本地 Windsurf 账号',
-    searchPlaceholder: '搜索邮箱、姓名、状态...',
+    searchPlaceholder: '搜索邮箱、auth_token 或套餐（Free/Pro/Trial）...',
     refreshAll: '全部刷新',
     refreshing: '刷新中...',
     refreshAllSuccess: '成功刷新 {count} 个账号',

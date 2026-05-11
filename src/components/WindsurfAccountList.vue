@@ -633,6 +633,19 @@ const isExpired = (account) => {
   return getExpireTimestamp(account) < Date.now()
 }
 
+const getAccountSearchText = (account) => {
+  return [
+    account?.email,
+    account?.auth_token,
+    account?.session_token,
+    account?.plan_name,
+    account?.teams_tier,
+    account?.teams_tier_name,
+    account?.plan_type,
+    account?.tier
+  ].filter(Boolean).join(' ').toLowerCase()
+}
+
 const noCreditsAccountsCount = computed(() => {
   return accounts.value.filter(a => isNoCredits(a)).length
 })
@@ -759,13 +772,7 @@ const sortedAccounts = computed(() => {
 const filteredAccounts = computed(() => {
   if (!searchQuery.value.trim()) return sortedAccounts.value
   const q = searchQuery.value.toLowerCase().trim()
-  return sortedAccounts.value.filter(a => {
-    const email = (a.email || '').toLowerCase()
-    const first = (a.first_name || '').toLowerCase()
-    const last = (a.last_name || '').toLowerCase()
-    const status = (a.status || '').toLowerCase()
-    return email.includes(q) || first.includes(q) || last.includes(q) || status.includes(q)
-  })
+  return sortedAccounts.value.filter(a => getAccountSearchText(a).includes(q))
 })
 
 // 根据当前卡片数切换网格列定义：

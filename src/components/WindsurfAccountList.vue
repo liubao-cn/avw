@@ -2341,7 +2341,7 @@ onUnmounted(() => {
 }
 
 .search-box {
-  flex: 0 1 220px;
+  flex: 0 1 260px;
   min-width: 0;
   display: flex;
   align-items: center;

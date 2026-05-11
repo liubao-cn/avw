@@ -5,7 +5,7 @@
         <span class="sidebar-logo">AVW</span>
         <button
           class="sidebar-collapse-btn"
-          @click="sidebarCollapsed = !sidebarCollapsed"
+          @click="toggleSidebarCollapsed"
           :title="sidebarCollapsed ? $t('app.appHome') : $t('app.windsurf')"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -60,15 +60,40 @@
     <div class="app-main-area">
       <div v-if="updateInfo?.update_available" class="update-banner">
         <div class="update-copy">
-          {{ $t('app.updateAvailable', { version: updateInfo.latest_version }) }}
+          <div class="update-title">
+            {{ $t('app.updateAvailable', { version: updateInfo.latest_version }) }}
+            <button
+              v-if="hasUpdateSummary"
+              type="button"
+              class="update-summary-toggle"
+              @click="updateSummaryExpanded = !updateSummaryExpanded"
+            >
+              {{ updateSummaryExpanded ? $t('app.hideUpdateSummary') : $t('app.showUpdateSummary') }}
+            </button>
+          </div>
+          <ul v-if="hasUpdateSummary && updateSummaryExpanded" class="update-summary">
+            <li v-for="item in updateInfo.release_summary" :key="item">{{ item }}</li>
+          </ul>
+          <div v-if="updateDownloadMessage" class="update-download-message">
+            {{ updateDownloadMessage }}
+          </div>
         </div>
         <div class="update-actions">
           <button
             class="update-link"
             type="button"
+            :disabled="updateDownloading"
+            @click="downloadUpdate"
+          >
+            {{ updateDownloading ? $t('app.downloadingUpdate') : updateActionLabel }}
+          </button>
+          <button
+            v-if="!updateInfo.download_url"
+            class="update-secondary-link"
+            type="button"
             @click="openReleasePage"
           >
-            {{ $t('app.updateNow') }}
+            {{ $t('app.viewRelease') }}
           </button>
           <button type="button" class="update-dismiss" :aria-label="$t('app.dismissUpdate')" @click="dismissUpdate">
             ×
@@ -142,18 +167,49 @@ import WindsurfTargetDialog from './components/WindsurfTargetDialog.vue'
 const { t, locale } = useI18n()
 
 const SIDEBAR_AUTO_COLLAPSE_BREAKPOINT = 960
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'avw-sidebar-collapsed'
 const AUTHOR_WECHAT = '_liubao'
 
-const sidebarCollapsed = ref(false)
+const readSidebarCollapsedPreference = () => {
+  try {
+    const saved = localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY)
+    if (saved === '1') return true
+    if (saved === '0') return false
+  } catch {
+  }
+  return null
+}
+
+const defaultSidebarCollapsed = () => {
+  if (typeof window === 'undefined') return false
+  return window.innerWidth < SIDEBAR_AUTO_COLLAPSE_BREAKPOINT
+}
+
+const sidebarCollapsed = ref(readSidebarCollapsedPreference() ?? defaultSidebarCollapsed())
 const currentLocale = ref(locale.value)
 const updateInfo = ref(null)
 const showWindsurfTargetDialog = ref(false)
 const wechatCopyState = ref('idle')
+const updateSummaryExpanded = ref(false)
+const updateDownloading = ref(false)
+const updateDownloadMessage = ref('')
 
 const openWindsurfTargetDialog = () => {
   showWindsurfTargetDialog.value = true
 }
 let wechatResetTimer = null
+
+const saveSidebarCollapsedPreference = () => {
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, sidebarCollapsed.value ? '1' : '0')
+  } catch {
+  }
+}
+
+const toggleSidebarCollapsed = () => {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  saveSidebarCollapsedPreference()
+}
 
 const wechatBtnLabel = computed(() => {
   if (wechatCopyState.value === 'copied') return t('app.wechatCopied')
@@ -246,16 +302,21 @@ const themeToggleLabel = computed(() => {
   return isDarkTheme.value ? t('app.switchToLight') : t('app.switchToDark')
 })
 
-const syncSidebarWithViewport = () => {
-  if (typeof window === 'undefined') return
-  sidebarCollapsed.value = window.innerWidth < SIDEBAR_AUTO_COLLAPSE_BREAKPOINT
-}
+const hasUpdateSummary = computed(() => {
+  return Array.isArray(updateInfo.value?.release_summary) && updateInfo.value.release_summary.length > 0
+})
+
+const updateActionLabel = computed(() => {
+  return updateInfo.value?.download_url ? t('app.downloadUpdate') : t('app.viewRelease')
+})
 
 const checkUpdates = async () => {
   try {
     const resp = await invoke('check_for_updates')
     if (resp?.success && resp.update_available) {
       updateInfo.value = resp
+      updateSummaryExpanded.value = false
+      updateDownloadMessage.value = ''
     }
   } catch {
     updateInfo.value = null
@@ -264,12 +325,37 @@ const checkUpdates = async () => {
 
 const dismissUpdate = () => {
   updateInfo.value = null
+  updateSummaryExpanded.value = false
+  updateDownloadMessage.value = ''
 }
 
 const openReleasePage = async () => {
   try {
     await invoke('open_release_page')
   } catch {
+  }
+}
+
+const downloadUpdate = async () => {
+  if (!updateInfo.value?.download_url) {
+    await openReleasePage()
+    return
+  }
+  updateDownloading.value = true
+  updateDownloadMessage.value = ''
+  try {
+    const resp = await invoke('download_update_asset', {
+      url: updateInfo.value.download_url,
+      fileName: updateInfo.value.download_name || null
+    })
+    updateDownloadMessage.value = resp?.opened
+      ? t('app.updateDownloadedAndOpened', { name: resp.file_name })
+      : t('app.updateDownloaded', { name: resp?.file_name || updateInfo.value.download_name || '' })
+  } catch (e) {
+    updateDownloadMessage.value = t('app.updateDownloadFailed')
+    await openReleasePage()
+  } finally {
+    updateDownloading.value = false
   }
 }
 
@@ -282,13 +368,10 @@ onMounted(() => {
 
   localStorage.removeItem('user')
   localStorage.removeItem('token')
-  syncSidebarWithViewport()
   checkUpdates()
-  window.addEventListener('resize', syncSidebarWithViewport)
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', syncSidebarWithViewport)
   if (wechatResetTimer) {
     clearTimeout(wechatResetTimer)
     wechatResetTimer = null

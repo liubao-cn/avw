@@ -37,13 +37,34 @@ pub struct AvwUpdateCheckResult {
     pub latest_version: Option<String>,
     pub update_available: bool,
     pub release_url: Option<String>,
+    pub release_summary: Vec<String>,
+    pub download_url: Option<String>,
+    pub download_name: Option<String>,
+    pub download_platform: Option<String>,
+    pub download_arch: Option<String>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AvwUpdateDownloadResult {
+    pub success: bool,
+    pub file_name: String,
+    pub file_path: String,
+    pub opened: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct GithubLatestRelease {
     tag_name: String,
     html_url: Option<String>,
+    body: Option<String>,
+    assets: Vec<GithubReleaseAsset>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubReleaseAsset {
+    name: String,
+    browser_download_url: String,
 }
 
 fn normalize_version_tag(version: &str) -> String {
@@ -81,6 +102,348 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
     false
 }
 
+fn current_update_platform() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "macos"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "windows"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "linux"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        "unknown"
+    }
+}
+
+fn current_update_arch() -> &'static str {
+    std::env::consts::ARCH
+}
+
+fn clean_release_summary_line(line: &str) -> Option<String> {
+    let mut text = line.trim();
+    if text.is_empty() || text.starts_with("```") || text == "---" {
+        return None;
+    }
+    while let Some(stripped) = text.strip_prefix('#') {
+        text = stripped.trim_start();
+    }
+    for prefix in ["- [x] ", "- [X] ", "- [ ] ", "- ", "* ", "+ "] {
+        if let Some(stripped) = text.strip_prefix(prefix) {
+            text = stripped.trim_start();
+            break;
+        }
+    }
+    let cleaned = text
+        .replace("**", "")
+        .replace("__", "")
+        .replace('`', "")
+        .trim()
+        .to_string();
+    if cleaned.is_empty() || should_skip_release_summary_line(&cleaned) {
+        return None;
+    }
+    Some(cleaned)
+}
+
+fn should_skip_release_summary_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "验证",
+        "测试",
+        "注意",
+        "打包",
+        "构建",
+        "verification",
+        "verified",
+        "test plan",
+        "testing",
+        "note",
+        "requirement",
+        "node.js",
+        "cargo check",
+        "git diff",
+    ]
+    .iter()
+    .any(|keyword| lower.contains(keyword))
+}
+
+fn release_heading_should_skip(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    [
+        "验证",
+        "测试",
+        "注意",
+        "打包",
+        "verification",
+        "test plan",
+        "testing",
+        "note",
+    ]
+    .iter()
+    .any(|keyword| lower.contains(keyword))
+}
+
+fn summarize_release_body(body: Option<&str>) -> Vec<String> {
+    let Some(body) = body else {
+        return Vec::new();
+    };
+    let mut bullets = Vec::new();
+    let mut fallback = Vec::new();
+    let mut skip_section = false;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            if let Some(heading) = clean_release_summary_line(trimmed) {
+                skip_section = release_heading_should_skip(&heading);
+                if !skip_section && !heading.starts_with("AVW v") && !heading.starts_with("v") {
+                    fallback.push(heading);
+                }
+            }
+            continue;
+        }
+        if skip_section {
+            continue;
+        }
+        let is_bullet =
+            trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ");
+        if let Some(cleaned) = clean_release_summary_line(trimmed) {
+            if is_bullet {
+                bullets.push(cleaned);
+            } else if cleaned.chars().count() > 4 {
+                fallback.push(cleaned);
+            }
+        }
+    }
+    let mut summary = if bullets.is_empty() {
+        fallback
+    } else {
+        bullets
+    };
+    summary.truncate(6);
+    summary
+}
+
+fn update_asset_type_score(name: &str) -> Option<i32> {
+    let platform = current_update_platform();
+    match platform {
+        "macos" => {
+            if name.ends_with(".dmg") {
+                Some(100)
+            } else if name.ends_with(".pkg") {
+                Some(90)
+            } else if name.ends_with(".zip")
+                && (name.contains("mac") || name.contains("darwin") || name.contains("osx"))
+            {
+                Some(40)
+            } else {
+                None
+            }
+        }
+        "windows" => {
+            if name.ends_with(".exe") {
+                Some(100)
+            } else if name.ends_with(".msi") {
+                Some(90)
+            } else if name.ends_with(".zip") && (name.contains("win") || name.contains("windows")) {
+                Some(40)
+            } else {
+                None
+            }
+        }
+        "linux" => {
+            if name.ends_with(".appimage") {
+                Some(100)
+            } else if name.ends_with(".deb") {
+                Some(95)
+            } else if name.ends_with(".rpm") {
+                Some(70)
+            } else if (name.ends_with(".tar.gz") || name.ends_with(".tgz"))
+                && name.contains("linux")
+            {
+                Some(40)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn update_asset_arch_score(name: &str) -> Option<i32> {
+    if name.contains("universal") {
+        return Some(20);
+    }
+    let arch = current_update_arch();
+    let (matches, mismatches): (&[&str], &[&str]) = match arch {
+        "aarch64" => (
+            &["aarch64", "arm64"],
+            &["x86_64", "x64", "amd64", "i386", "i686"],
+        ),
+        "x86_64" => (&["x86_64", "x64", "amd64"], &["aarch64", "arm64", "armv7"]),
+        "x86" | "i386" | "i686" => (
+            &["x86", "i386", "i686"],
+            &["x86_64", "x64", "amd64", "aarch64", "arm64"],
+        ),
+        "arm" => (
+            &["arm", "armv7"],
+            &["x86_64", "x64", "amd64", "aarch64", "arm64"],
+        ),
+        _ => (&[] as &[&str], &[] as &[&str]),
+    };
+    if mismatches.iter().any(|token| name.contains(token)) {
+        return None;
+    }
+    if matches.iter().any(|token| name.contains(token)) {
+        return Some(30);
+    }
+    Some(3)
+}
+
+fn update_asset_score(asset: &GithubReleaseAsset) -> Option<i32> {
+    let name = asset.name.to_ascii_lowercase();
+    if [
+        ".sig",
+        ".asc",
+        ".sha",
+        ".sha256",
+        ".sha512",
+        ".blockmap",
+        ".json",
+    ]
+    .iter()
+    .any(|suffix| name.ends_with(suffix))
+    {
+        return None;
+    }
+    Some(update_asset_type_score(&name)? + update_asset_arch_score(&name)?)
+}
+
+fn best_update_asset(assets: &[GithubReleaseAsset]) -> Option<&GithubReleaseAsset> {
+    assets
+        .iter()
+        .filter_map(|asset| update_asset_score(asset).map(|score| (score, asset)))
+        .max_by_key(|(score, _)| *score)
+        .map(|(_, asset)| asset)
+}
+
+fn open_external_url(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("打开链接失败: {}", e))?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        command_hidden("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+            .map_err(|e| format!("打开链接失败: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("打开链接失败: {}", e))?;
+    }
+
+    Ok(())
+}
+
+fn open_local_path(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("打开下载文件失败: {}", e))?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let path_arg = path.to_string_lossy().to_string();
+        command_hidden("cmd")
+            .args(["/C", "start", "", &path_arg])
+            .spawn()
+            .map_err(|e| format!("打开下载文件失败: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("打开下载文件失败: {}", e))?;
+    }
+
+    Ok(())
+}
+
+fn safe_download_file_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric()
+                || matches!(ch, '.' | '-' | '_' | ' ' | '(' | ')' | '[' | ']')
+            {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim_matches(|ch| ch == '.' || ch == ' ').trim();
+    if trimmed.is_empty() {
+        "AVW-update".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn file_name_from_download_url(url: &str) -> String {
+    url.split('/')
+        .next_back()
+        .and_then(|part| part.split('?').next())
+        .map(safe_download_file_name)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "AVW-update".to_string())
+}
+
+fn unique_download_path(download_dir: &Path, file_name: &str) -> PathBuf {
+    let initial = download_dir.join(file_name);
+    if !initial.exists() {
+        return initial;
+    }
+    let path = Path::new(file_name);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("AVW-update");
+    let extension = path.extension().and_then(|value| value.to_str());
+    for index in 1..1000 {
+        let candidate_name = match extension {
+            Some(extension) => format!("{} ({index}).{}", stem, extension),
+            None => format!("{} ({index})", stem),
+        };
+        let candidate = download_dir.join(candidate_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    download_dir.join(file_name)
+}
+
 #[tauri::command]
 pub async fn check_for_updates() -> Result<AvwUpdateCheckResult, String> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
@@ -90,6 +453,11 @@ pub async fn check_for_updates() -> Result<AvwUpdateCheckResult, String> {
         latest_version: None,
         update_available: false,
         release_url: Some(AVW_RELEASES_URL.to_string()),
+        release_summary: Vec::new(),
+        download_url: None,
+        download_name: None,
+        download_platform: Some(current_update_platform().to_string()),
+        download_arch: Some(current_update_arch().to_string()),
         error: Some(msg),
     };
 
@@ -116,6 +484,8 @@ pub async fn check_for_updates() -> Result<AvwUpdateCheckResult, String> {
     };
     let latest_version = normalize_version_tag(&release.tag_name);
     let update_available = is_newer_version(&latest_version, &current_version);
+    let release_summary = summarize_release_body(release.body.as_deref());
+    let download_asset = best_update_asset(&release.assets);
 
     Ok(AvwUpdateCheckResult {
         success: true,
@@ -125,37 +495,71 @@ pub async fn check_for_updates() -> Result<AvwUpdateCheckResult, String> {
         release_url: release
             .html_url
             .or_else(|| Some(AVW_RELEASES_URL.to_string())),
+        release_summary,
+        download_url: download_asset.map(|asset| asset.browser_download_url.clone()),
+        download_name: download_asset.map(|asset| asset.name.clone()),
+        download_platform: Some(current_update_platform().to_string()),
+        download_arch: Some(current_update_arch().to_string()),
         error: None,
     })
 }
 
 #[tauri::command]
 pub fn open_release_page() -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(AVW_RELEASES_URL)
-            .spawn()
-            .map_err(|e| format!("打开 Release 页面失败: {}", e))?;
+    open_external_url(AVW_RELEASES_URL)
+}
+
+#[tauri::command]
+pub async fn download_update_asset(
+    url: String,
+    file_name: Option<String>,
+) -> Result<AvwUpdateDownloadResult, String> {
+    if !url.starts_with("https://github.com/liubao-cn/avw/releases/download/") {
+        return Err("非法更新下载链接".to_string());
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        command_hidden("cmd")
-            .args(["/C", "start", "", AVW_RELEASES_URL])
-            .spawn()
-            .map_err(|e| format!("打开 Release 页面失败: {}", e))?;
-    }
+    let download_dir = dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| "无法定位下载目录".to_string())?;
+    fs::create_dir_all(&download_dir).map_err(|e| format!("创建下载目录失败: {}", e))?;
 
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(AVW_RELEASES_URL)
-            .spawn()
-            .map_err(|e| format!("打开 Release 页面失败: {}", e))?;
-    }
+    let file_name = file_name
+        .as_deref()
+        .map(safe_download_file_name)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| file_name_from_download_url(&url));
+    let target_path = unique_download_path(&download_dir, &file_name);
 
-    Ok(())
+    let client = create_http_client()?;
+    let response = client
+        .get(&url)
+        .header("accept", "application/octet-stream")
+        .header("user-agent", "AVW")
+        .send()
+        .await
+        .map_err(|e| format!("下载更新失败: {}", e))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("下载更新失败，服务器返回状态 {}", status));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("读取更新安装包失败: {}", e))?;
+    fs::write(&target_path, &bytes).map_err(|e| format!("保存更新安装包失败: {}", e))?;
+
+    let opened = open_local_path(&target_path).is_ok();
+
+    Ok(AvwUpdateDownloadResult {
+        success: true,
+        file_name: target_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(&file_name)
+            .to_string(),
+        file_path: target_path.to_string_lossy().to_string(),
+        opened,
+    })
 }
 
 // ---------------- Protobuf 最小编解码辅助（仅用于 GetOneTimeAuthToken 的 string field 1） ----------------

@@ -34,6 +34,7 @@ fn main() {
             auto_switch::windsurf_auto_switch_update_snapshot,
             // Windsurf 账号管理命令（Windsurf-only 版本唯一保留的后端能力）
             windsurf::check_for_updates,
+            windsurf::download_update_asset,
             windsurf::open_release_page,
             windsurf::reset_windsurf_machine_id,
             windsurf::windsurf_get_current_login,

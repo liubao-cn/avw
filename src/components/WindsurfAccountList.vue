@@ -2691,11 +2691,22 @@ onUnmounted(() => {
   background: var(--card-bg, #fff);
   border-radius: 14px;
   width: min(640px, 92vw);
-  max-height: 84vh;
+  max-height: calc(100vh - 40px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.18);
+}
+
+.auto-switch-dialog .dialog-header,
+.auto-switch-dialog .dialog-footer {
+  flex-shrink: 0;
+}
+
+.auto-switch-dialog .dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .auto-switch-form {

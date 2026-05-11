@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod auto_switch;
 mod http_client;
 mod windsurf;
 
@@ -22,7 +23,15 @@ fn main() {
     }
 
     builder
+        .manage(auto_switch::AutoSwitchState::default())
+        .setup(|app| {
+            auto_switch::spawn_worker(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
+            auto_switch::windsurf_auto_switch_get_status,
+            auto_switch::windsurf_auto_switch_request_check,
+            auto_switch::windsurf_auto_switch_update_snapshot,
             // Windsurf 账号管理命令（Windsurf-only 版本唯一保留的后端能力）
             windsurf::check_for_updates,
             windsurf::open_release_page,

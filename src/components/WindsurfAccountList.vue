@@ -449,6 +449,7 @@
 <script setup>
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { useI18n } from 'vue-i18n'
 import WindsurfAccountCard from './WindsurfAccountCard.vue'
 import WindsurfAnalyticsDialog from './WindsurfAnalyticsDialog.vue'
@@ -481,6 +482,8 @@ const locatingCurrentAccount = ref(false)
 const currentLoginEmail = ref('')
 const highlightedLoginEmail = ref('')
 let currentLoginHighlightTimer = null
+let unlistenAutoSwitchEvent = null
+let autoSwitchSnapshotSyncTimer = null
 
 // Auth1 Token 手动添加
 const showAuth1Dialog = ref(false)
@@ -536,6 +539,7 @@ const autoSwitchRuntime = ref({
   lastSwitchAt: null,
   lastActivityWakeAt: null,
   lastFullIdleCheckAt: 0,
+  nextDueAt: 0,
 })
 
 const CACHE_KEY = 'windsurf_accounts_cache_v1'
@@ -793,6 +797,7 @@ const saveCache = () => {
     localStorage.setItem(CACHE_KEY, JSON.stringify(payload))
   } catch {
   }
+  scheduleAutoSwitchSnapshotSync()
 }
 
 const normalizeEmail = (email) => String(email || '').trim().toLowerCase()
@@ -837,6 +842,87 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 
 const setAutoSwitchMessage = (message) => {
   autoSwitchRuntime.value.message = message
+}
+
+const applyAutoSwitchStatus = (status) => {
+  if (!status || typeof status !== 'object') return
+  autoSwitchRuntime.value.busy = status.busy === true
+  autoSwitchRuntime.value.idle = status.idle === true
+  autoSwitchRuntime.value.unchangedChecks = Number(status.unchangedChecks || 0)
+  autoSwitchRuntime.value.cooldownUntil = Number(status.cooldownUntil || 0)
+  autoSwitchRuntime.value.nextDueAt = Number(status.nextDueAt || 0)
+  autoSwitchRuntime.value.lastCheckAt = status.lastCheckAt || null
+  autoSwitchRuntime.value.lastSwitchAt = status.lastSwitchAt || null
+  autoSwitchRuntime.value.lastActivityWakeAt = status.lastActivityWakeAt || null
+  if (typeof status.message === 'string') autoSwitchRuntime.value.message = status.message
+}
+
+const autoSwitchSnapshotPayload = (immediate = false) => ({
+  config: autoSwitchConfig.value,
+  accounts: accounts.value.map(sanitizeForCache),
+  windsurfTarget: buildInvokeTarget(),
+  lastSwitchEmail: loadLastSwitchEmail(),
+  immediate
+})
+
+const syncAutoSwitchSnapshot = async ({ immediate = false } = {}) => {
+  try {
+    const status = await invoke('windsurf_auto_switch_update_snapshot', {
+      snapshot: autoSwitchSnapshotPayload(immediate)
+    })
+    applyAutoSwitchStatus(status)
+  } catch (e) {
+    setAutoSwitchMessage(`${t('windsurf.autoSwitchCheckFailed')}: ${e.message || e}`)
+  }
+}
+
+const scheduleAutoSwitchSnapshotSync = () => {
+  if (autoSwitchSnapshotSyncTimer) clearTimeout(autoSwitchSnapshotSyncTimer)
+  autoSwitchSnapshotSyncTimer = setTimeout(() => {
+    autoSwitchSnapshotSyncTimer = null
+    syncAutoSwitchSnapshot()
+  }, 100)
+}
+
+const mergeAutoSwitchAccount = (updated) => {
+  if (!updated || !updated.email) return null
+  const email = normalizeEmail(updated.email)
+  const existingIndex = accounts.value.findIndex(account => normalizeEmail(account.email) === email)
+  if (existingIndex >= 0) {
+    const existing = accounts.value[existingIndex]
+    const merged = normalizeLocalItem({ ...existing, ...updated })
+    merged.__loggingIn = existing.__loggingIn || false
+    merged.__refreshingCredits = existing.__refreshingCredits || false
+    merged.__updating = existing.__updating || false
+    accounts.value[existingIndex] = merged
+    return accounts.value[existingIndex]
+  }
+  accounts.value.unshift(normalizeLocalItem(updated))
+  return accounts.value[0]
+}
+
+const handleAutoSwitchEvent = async (event) => {
+  const payload = event?.payload || {}
+  applyAutoSwitchStatus(payload.status)
+  if (payload.account) {
+    mergeAutoSwitchAccount(payload.account)
+    saveCache()
+  }
+  if (payload.kind === 'switched') {
+    const email = normalizeEmail(payload.email || payload.account?.email)
+    if (email) {
+      saveLastSwitchEmail(email)
+      await revealCurrentLoginAccount(email)
+    }
+    if (payload.message) showToast(payload.message, 'success')
+  }
+}
+
+const setupAutoSwitchEventListener = async () => {
+  if (unlistenAutoSwitchEvent) return
+  unlistenAutoSwitchEvent = await listen('windsurf-auto-switch-event', event => {
+    handleAutoSwitchEvent(event)
+  })
 }
 
 const clearAutoSwitchTimer = () => {
@@ -933,6 +1019,15 @@ const scrollToCurrentLoginAccount = async (email) => {
   return true
 }
 
+const revealCurrentLoginAccount = async (email) => {
+  const normalized = normalizeEmail(email)
+  if (!normalized) return false
+  currentLoginEmail.value = normalized
+  const visible = filteredAccounts.value.some(account => normalizeEmail(account.email) === normalized)
+  if (!visible) searchQuery.value = ''
+  return scrollToCurrentLoginAccount(normalized)
+}
+
 const locateCurrentLoginAccount = async () => {
   if (locatingCurrentAccount.value) return
   locatingCurrentAccount.value = true
@@ -948,9 +1043,7 @@ const locateCurrentLoginAccount = async () => {
       showToast(t('windsurf.currentLoginNotInList', { email }), 'warning')
       return
     }
-    const visible = filteredAccounts.value.some(account => normalizeEmail(account.email) === email)
-    if (!visible) searchQuery.value = ''
-    const scrolled = await scrollToCurrentLoginAccount(email)
+    const scrolled = await revealCurrentLoginAccount(email)
     if (scrolled) showToast(t('windsurf.currentLoginLocated', { email: matched.email || email }), 'success')
     else showToast(t('windsurf.currentLoginLocatedButHidden', { email: matched.email || email }), 'warning')
   } catch (e) {
@@ -1099,6 +1192,7 @@ const trySwitchToNextAvailable = async (currentAccount, config, reason) => {
     markAutoSwitchSuccess(email)
     saveLastSwitchEmail(refreshed.email)
     autoSwitchRuntime.value.lastSwitchAt = new Date().toISOString()
+    await revealCurrentLoginAccount(refreshed.email)
     enterAutoSwitchCooldown(config.cooldownSeconds, t('windsurf.autoSwitchSwitched', { email: refreshed.email, reason }))
     showToast(t('windsurf.autoSwitchSwitched', { email: refreshed.email, reason }), 'success')
     return true
@@ -1213,15 +1307,19 @@ const startAutoSwitchService = async ({ immediate = false } = {}) => {
   autoSwitchConfig.value = loadAutoSwitchConfig()
   if (!autoSwitchConfig.value.enabled) {
     setAutoSwitchMessage(t('windsurf.autoSwitchDisabled'))
+    await syncAutoSwitchSnapshot()
     return
   }
   const seamlessReady = await applySeamlessPatchIfNeeded(autoSwitchConfig.value, { silent: true })
   if (!seamlessReady) {
     setAutoSwitchMessage(t('windsurf.autoSwitchSeamlessRequired'))
+    autoSwitchConfig.value = saveAutoSwitchConfig({ ...autoSwitchConfig.value, enabled: false })
+    await syncAutoSwitchSnapshot()
+    return
   } else {
     setAutoSwitchMessage(t('windsurf.autoSwitchWaiting'))
   }
-  scheduleAutoSwitch(immediate ? 2 : autoSwitchConfig.value.intervalSeconds)
+  await syncAutoSwitchSnapshot({ immediate })
 }
 
 const stopAutoSwitchService = () => {
@@ -1232,13 +1330,17 @@ const stopAutoSwitchService = () => {
   autoSwitchRuntime.value.cooldownUntil = 0
   autoSwitchRuntime.value.lastFullIdleCheckAt = 0
   setAutoSwitchMessage(t('windsurf.autoSwitchDisabled'))
+  syncAutoSwitchSnapshot()
 }
 
 const requestAutoSwitchCheck = async () => {
   if (autoSwitchRuntime.value.busy) return
-  autoSwitchRuntime.value.cooldownUntil = 0
-  autoSwitchRuntime.value.idle = false
-  await autoSwitchTick()
+  try {
+    const status = await invoke('windsurf_auto_switch_request_check')
+    applyAutoSwitchStatus(status)
+  } catch (e) {
+    setAutoSwitchMessage(`${t('windsurf.autoSwitchCheckFailed')}: ${e.message || e}`)
+  }
 }
 
 const closeAutoSwitchDialog = () => {
@@ -1940,6 +2042,7 @@ onMounted(() => {
   accounts.value = cached
   isLoading.value = false
   document.addEventListener('click', handleClickOutside)
+  setupAutoSwitchEventListener()
   applySeamlessPatchIfNeeded(autoSwitchConfig.value, { silent: true })
   startAutoSwitchService({ immediate: true })
 })
@@ -1947,6 +2050,8 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside)
   clearAutoSwitchTimer()
+  if (autoSwitchSnapshotSyncTimer) clearTimeout(autoSwitchSnapshotSyncTimer)
+  if (typeof unlistenAutoSwitchEvent === 'function') unlistenAutoSwitchEvent()
   if (currentLoginHighlightTimer) clearTimeout(currentLoginHighlightTimer)
 })
 </script>

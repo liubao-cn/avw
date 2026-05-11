@@ -411,18 +411,18 @@ async fn try_switch_to_next_available(
     reason: String,
 ) {
     let current_email = normalize_email(current.email.as_deref().unwrap_or(""));
-    let current_index = snapshot
+    let has_current_account = snapshot
         .accounts
         .iter()
-        .position(|acc| normalize_email(acc.email.as_deref().unwrap_or("")) == current_email);
-    let Some(current_index) = current_index else {
+        .any(|acc| normalize_email(acc.email.as_deref().unwrap_or("")) == current_email);
+    if !has_current_account {
         enter_cooldown(
             app,
             snapshot.config.all_exhausted_cooldown_seconds,
             "没有可自动切换的可用账号",
         );
         return;
-    };
+    }
     if snapshot.accounts.len() < 2 {
         enter_cooldown(
             app,
@@ -431,27 +431,35 @@ async fn try_switch_to_next_available(
         );
         return;
     }
+    let mut candidates = snapshot
+        .accounts
+        .iter()
+        .cloned()
+        .enumerate()
+        .filter_map(|(index, candidate)| {
+            let email = normalize_email(candidate.email.as_deref().unwrap_or(""));
+            if email.is_empty()
+                || email == current_email
+                || candidate
+                    .auth_token
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty()
+                || is_expired(&candidate)
+                || is_free_account(&candidate)
+            {
+                return None;
+            }
+            Some((index, candidate))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|(index, account)| (expire_timestamp(account), *index));
     let mut attempts = 0usize;
     let mut has_retryable_failure = false;
     let mut last_failure = String::new();
-    for offset in 1..snapshot.accounts.len() {
-        let candidate =
-            snapshot.accounts[(current_index + offset) % snapshot.accounts.len()].clone();
+    for (_, candidate) in candidates {
         let email = normalize_email(candidate.email.as_deref().unwrap_or(""));
-        if email.is_empty()
-            || email == current_email
-            || candidate
-                .auth_token
-                .as_deref()
-                .unwrap_or("")
-                .trim()
-                .is_empty()
-        {
-            continue;
-        }
-        if is_expired(&candidate) || is_free_account(&candidate) {
-            continue;
-        }
         if failed_until(app, &email) > now_ms() {
             has_retryable_failure = true;
             continue;
@@ -991,12 +999,16 @@ fn is_free_account(account: &AutoSwitchAccount) -> bool {
 }
 
 fn is_expired(account: &AutoSwitchAccount) -> bool {
-    let Some(value) = account.expires_at.as_deref() else {
-        return false;
-    };
-    chrono::DateTime::parse_from_rfc3339(value)
-        .map(|dt| dt.timestamp_millis() < now_ms())
-        .unwrap_or(false)
+    expire_timestamp(account) < now_ms()
+}
+
+fn expire_timestamp(account: &AutoSwitchAccount) -> i64 {
+    account
+        .expires_at
+        .as_deref()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or(i64::MAX)
 }
 
 fn snapshot_clone(app: &AppHandle) -> Option<AutoSwitchSnapshot> {

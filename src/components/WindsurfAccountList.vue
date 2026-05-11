@@ -553,6 +553,9 @@ const AUTO_SWITCH_ACTIVITY_WAKE_DELAY_SECONDS = 5
 const AUTO_SWITCH_ACTIVITY_WAKE_SKIP_WITHIN_SECONDS = 15
 const AUTO_SWITCH_IDLE_FRONTMOST_PROBE_SECONDS = 30
 const AUTO_SWITCH_COOLDOWN_FRONTMOST_PROBE_SECONDS = 15
+const SWITCH_ACCOUNT_MAX_ATTEMPTS = 2
+const SWITCH_ACCOUNT_RETRY_DELAY_MS = 800
+const SWITCH_ACCOUNT_VERIFY_DELAY_MS = 1500
 
 const toast = ref({ show: false, message: '', type: 'success' })
 const autoSwitchFailedUntil = new Map()
@@ -1131,6 +1134,77 @@ const switchAccountInternal = async (account, { silent = false } = {}) => {
   const ok = await handleSwitchAccount(account, { autoTriggered: true })
   if (silent) toast.value = before
   return ok
+}
+
+const invokeSwitchAccount = async (account, windsurfTarget) => {
+  return invoke('windsurf_switch_account', {
+    authToken: account.auth_token,
+    auth_token: account.auth_token,
+    refreshToken: null,
+    refresh_token: null,
+    devinAccountId: account.devin_account_id || null,
+    devin_account_id: account.devin_account_id || null,
+    devinPrimaryOrgId: account.devin_primary_org_id || null,
+    devin_primary_org_id: account.devin_primary_org_id || null,
+    windsurfTarget,
+    windsurf_target: windsurfTarget
+  })
+}
+
+const applySwitchAccountResponse = (account, resp) => {
+  let mutated = false
+  if (resp.auth_token) {
+    account.auth_token = resp.auth_token
+    mutated = true
+  }
+  if (resp.session_token) {
+    account.session_token = resp.session_token
+    mutated = true
+  }
+  if (resp.devin_account_id) {
+    account.devin_account_id = resp.devin_account_id
+    mutated = true
+  }
+  if (resp.devin_primary_org_id) {
+    account.devin_primary_org_id = resp.devin_primary_org_id
+    mutated = true
+  }
+  if (resp.provider && !account.auth_provider) {
+    account.auth_provider = resp.provider
+    mutated = true
+  }
+  if (mutated) saveCache()
+}
+
+const switchAccountWithRetry = async (account) => {
+  const windsurfTarget = buildInvokeTarget()
+  let lastResp = null
+  let lastError = null
+  for (let attempt = 1; attempt <= SWITCH_ACCOUNT_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const resp = await invokeSwitchAccount(account, windsurfTarget)
+      lastResp = resp
+      if (resp && resp.success) {
+        applySwitchAccountResponse(account, resp)
+        await delay(SWITCH_ACCOUNT_VERIFY_DELAY_MS)
+        const currentEmail = await getCurrentLoginEmail()
+        if (!currentEmail || currentEmail === normalizeEmail(account.email)) return resp
+        lastError = t('windsurf.autoSwitchVerifyStillCurrent', { email: currentEmail })
+      } else {
+        lastError = resp?.error || t('windsurf.switchFailed')
+      }
+    } catch (e) {
+      lastError = e.message || e
+    }
+    if (attempt < SWITCH_ACCOUNT_MAX_ATTEMPTS) {
+      await delay(SWITCH_ACCOUNT_RETRY_DELAY_MS)
+    }
+  }
+  return {
+    ...(lastResp || {}),
+    success: false,
+    error: lastError || t('windsurf.switchFailed')
+  }
 }
 
 const verifyAutoSwitch = async (account, config) => {
@@ -1936,48 +2010,12 @@ const handleSwitchAccount = async (account, options = {}) => {
       return false
     }
 
-    const windsurfTarget = buildInvokeTarget()
-    const resp = await invoke('windsurf_switch_account', {
-      authToken: account.auth_token,
-      auth_token: account.auth_token,
-      refreshToken: null,
-      refresh_token: null,
-      devinAccountId: account.devin_account_id || null,
-      devin_account_id: account.devin_account_id || null,
-      devinPrimaryOrgId: account.devin_primary_org_id || null,
-      devin_primary_org_id: account.devin_primary_org_id || null,
-      windsurfTarget,
-      windsurf_target: windsurfTarget
-    })
+    const resp = await switchAccountWithRetry(account)
 
     if (!resp || !resp.success) {
       showToast(`${t('windsurf.switchFailed')}: ${resp?.error || ''}`.trim(), 'error')
       return false
     }
-
-    // 回写：Auth1 路径会把新换的 session_token 和 devin_* 返回
-    let mutated = false
-    if (resp.auth_token) {
-      account.auth_token = resp.auth_token
-      mutated = true
-    }
-    if (resp.session_token) {
-      account.session_token = resp.session_token
-      mutated = true
-    }
-    if (resp.devin_account_id) {
-      account.devin_account_id = resp.devin_account_id
-      mutated = true
-    }
-    if (resp.devin_primary_org_id) {
-      account.devin_primary_org_id = resp.devin_primary_org_id
-      mutated = true
-    }
-    if (resp.provider && !account.auth_provider) {
-      account.auth_provider = resp.provider
-      mutated = true
-    }
-    if (mutated) saveCache()
 
     if (resp.machine_id_reset === false) {
       const reason = resp.machine_id_reset_error ? `: ${resp.machine_id_reset_error}` : ''

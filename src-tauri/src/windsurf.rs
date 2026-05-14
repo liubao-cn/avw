@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use tokio::task::JoinSet;
 use tokio::time::{Duration, sleep};
 use uuid::Uuid;
 
@@ -992,7 +993,7 @@ fn parse_windsurf_post_auth_response(bytes: &[u8]) -> Result<WindsurfPostAuthRes
         }
     }
 
-    if result.session_token.is_empty() {
+    if result.session_token.is_empty() && result.orgs.is_empty() {
         return Err("WindsurfPostAuth 响应缺少 session_token 字段".to_string());
     }
     Ok(result)
@@ -1003,30 +1004,20 @@ fn parse_windsurf_post_auth_response(bytes: &[u8]) -> Result<WindsurfPostAuthRes
 /// - `auth1_token`：Devin 一级令牌（格式 `auth1_<52>`），通过 `X-Devin-Auth1-Token` header 携带
 /// - `org_id`：可选的目标组织 ID；传空时由后端按用户 primary org 返回
 ///
-/// 协议变更说明（2026-04 后服务端升级）：
-/// - 旧版：`auth1_token` 编码到 body field 1，`org_id` 编码到 body field 2
-/// - 新版：body **只携带 `org_id`（field 1）**，`auth1_token` 通过 **`X-Devin-Auth1-Token`
-///   header** 鉴权。错误地把 `auth1_token` 放进 body 会让服务端 protobuf 反序列化失败
-///   并返回 `400 invalid_argument`。
-///
-/// 兼容性说明（v1.5.2 修复 Windows 411 LengthRequired）：
-/// `org_id` 即使为空也显式编码为 field 1（proto3 中显式空字符串与未传字段语义等价），
-/// 确保请求体至少 2 字节。否则当 `org_id` 为空时 body 是 0 字节，Windows 上 reqwest 经
-/// schannel + HTTP/2 协商时不会发送 `Content-Length: 0` 也不会发 DATA frame，CloudFront
-/// 转发到上游 origin 时丢失长度信息，整体被网关层拦下并返回 `411 Length Required`
-/// （`text/html` HTML 错误页，根本到不了后端）。macOS 上走 native-tls + HTTP/1.1，0-byte
-/// 请求会自带 `Content-Length: 0`，所以表现不一致。
+/// 协议格式：body field 1 编码 `auth1_token`，field 2 编码可选 `org_id`，同时通过
+/// `X-Devin-Auth1-Token` header 携带 auth1_token。多组织账号未指定 org_id 时，服务端
+/// 可能只返回 orgs 列表，调用方需要带具体 org_id 二次请求换 session_token。
 async fn windsurf_post_auth_internal(
     auth1_token: &str,
     org_id: &str,
 ) -> Result<WindsurfPostAuthResponse, String> {
     let http_client = create_http_client()?;
 
-    // 新版协议：body 只携带 org_id（field 1），不再包含 auth1_token。
-    // 这里**总是**编码 field 1（即使 org_id 为空字符串），让 body 至少 2 字节，避免
-    // Windows 上 0-byte POST 请求被 CloudFront 拒绝返回 411 LengthRequired。
-    let mut body = Vec::with_capacity(org_id.len() + 4);
-    append_protobuf_string_field(&mut body, 1, org_id);
+    let mut body = Vec::with_capacity(auth1_token.len() + org_id.len() + 4);
+    append_protobuf_string_field(&mut body, 1, auth1_token);
+    if !org_id.is_empty() {
+        append_protobuf_string_field(&mut body, 2, org_id);
+    }
 
     let response = http_client
         .post(WINDSURF_POST_AUTH_API)
@@ -1226,6 +1217,20 @@ pub struct AddAccountByAuth1TokenResult {
     pub auth1_token: Option<String>,
     /// 落盘账号对象（JSON，结构由后端根据 GetCurrentUser 响应填充）
     pub account: Option<serde_json::Value>,
+    #[serde(default)]
+    pub accounts: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub accounts_created: usize,
+    #[serde(default)]
+    pub accounts_skipped: usize,
+    #[serde(default)]
+    pub accounts_error: usize,
+    #[serde(default)]
+    pub total_orgs: usize,
+    #[serde(default)]
+    pub errors: Vec<String>,
+    #[serde(default)]
+    pub skipped: Vec<String>,
 }
 
 /// 通过 Devin Auth1 Token 一键解析账号信息（不持久化，由前端决定是否入库 / 同步云端）。
@@ -1264,34 +1269,97 @@ pub async fn windsurf_add_account_by_auth1_token(
     let user_specified_org = org_id.as_deref().map(str::trim).unwrap_or("").to_string();
     let auto_pick = auto_select_primary_org.unwrap_or(false);
 
-    // Step 1: auth1_token → session_token
-    let post_auth = match windsurf_post_auth_internal(&token_trimmed, &user_specified_org).await {
-        Ok(v) => v,
-        Err(e) => {
-            return Ok(AddAccountByAuth1TokenResult {
-                success: false,
-                error: Some(format!("auth1_token 无效或已过期: {}", e)),
-                ..Default::default()
-            });
-        }
-    };
+    let mut selected_org_id = user_specified_org.clone();
+    let post_auth_initial =
+        match windsurf_post_auth_internal(&token_trimmed, &selected_org_id).await {
+            Ok(v) => v,
+            Err(e) => {
+                return Ok(AddAccountByAuth1TokenResult {
+                    success: false,
+                    error: Some(format!("auth1_token 无效或已过期: {}", e)),
+                    ..Default::default()
+                });
+            }
+        };
 
-    // Step 2: 多组织场景处理
-    let effective_auth1_token = post_auth
+    let effective_auth1_token = post_auth_initial
         .auth1_token
         .clone()
         .unwrap_or_else(|| token_trimmed.clone());
 
-    if user_specified_org.is_empty() && !auto_pick && post_auth.orgs.len() > 1 {
-        return Ok(AddAccountByAuth1TokenResult {
-            success: false,
-            requires_org_selection: true,
-            orgs: post_auth.orgs.clone(),
-            auth1_token: Some(effective_auth1_token),
-            error: Some("检测到多个组织，请选择后重试".to_string()),
-            ..Default::default()
-        });
-    }
+    let post_auth = if post_auth_initial.session_token.is_empty() {
+        if !selected_org_id.is_empty() {
+            return Ok(AddAccountByAuth1TokenResult {
+                success: false,
+                error: Some("WindsurfPostAuth 响应缺少 session_token 字段".to_string()),
+                ..Default::default()
+            });
+        }
+        if post_auth_initial.orgs.is_empty() {
+            return Ok(AddAccountByAuth1TokenResult {
+                success: false,
+                error: Some("WindsurfPostAuth 响应缺少 session_token 字段".to_string()),
+                ..Default::default()
+            });
+        }
+        if !auto_pick && post_auth_initial.orgs.len() > 1 {
+            return Ok(AddAccountByAuth1TokenResult {
+                success: false,
+                requires_org_selection: true,
+                orgs: post_auth_initial.orgs.clone(),
+                auth1_token: Some(effective_auth1_token),
+                error: Some("检测到多个组织，请选择后重试".to_string()),
+                ..Default::default()
+            });
+        }
+        selected_org_id = post_auth_initial
+            .primary_org_id
+            .clone()
+            .or_else(|| post_auth_initial.orgs.first().map(|org| org.id.clone()))
+            .unwrap_or_default();
+        let initial_orgs = post_auth_initial.orgs.clone();
+        match windsurf_post_auth_internal(&effective_auth1_token, &selected_org_id).await {
+            Ok(mut v) => {
+                if v.orgs.is_empty() {
+                    v.orgs = initial_orgs;
+                }
+                if v.session_token.is_empty() {
+                    return Ok(AddAccountByAuth1TokenResult {
+                        success: false,
+                        error: Some("WindsurfPostAuth 响应缺少 session_token 字段".to_string()),
+                        ..Default::default()
+                    });
+                }
+                v
+            }
+            Err(e) => {
+                return Ok(AddAccountByAuth1TokenResult {
+                    success: false,
+                    error: Some(format!("auth1_token 无效或已过期: {}", e)),
+                    ..Default::default()
+                });
+            }
+        }
+    } else {
+        if user_specified_org.is_empty() && !auto_pick && post_auth_initial.orgs.len() > 1 {
+            return Ok(AddAccountByAuth1TokenResult {
+                success: false,
+                requires_org_selection: true,
+                orgs: post_auth_initial.orgs.clone(),
+                auth1_token: Some(effective_auth1_token),
+                error: Some("检测到多个组织，请选择后重试".to_string()),
+                ..Default::default()
+            });
+        }
+        if selected_org_id.is_empty() {
+            selected_org_id = post_auth_initial
+                .primary_org_id
+                .clone()
+                .or_else(|| post_auth_initial.orgs.first().map(|org| org.id.clone()))
+                .unwrap_or_default();
+        }
+        post_auth_initial
+    };
 
     // Step 3: 构造 5-header AuthContext，反查 GetCurrentUser
     let auth = WindsurfAuth {
@@ -1299,8 +1367,8 @@ pub async fn windsurf_add_account_by_auth1_token(
         devin_auth1_token: Some(effective_auth1_token.clone()),
         devin_account_id: post_auth.account_id.clone(),
         devin_primary_org_id: post_auth.primary_org_id.clone().or_else(|| {
-            if !user_specified_org.is_empty() {
-                Some(user_specified_org.clone())
+            if !selected_org_id.is_empty() {
+                Some(selected_org_id.clone())
             } else {
                 post_auth.orgs.first().map(|o| o.id.clone())
             }
@@ -1378,28 +1446,166 @@ pub async fn windsurf_add_account_by_auth1_token(
     })
     .unwrap_or_default();
 
-    let account_json = serde_json::json!({
-        "email": email,
-        "name": if name.is_empty() { email.split('@').next().unwrap_or("").to_string() } else { name.clone() },
-        "auth_token": effective_auth1_token,
-        "session_token": post_auth.session_token,
-        "devin_account_id": post_auth.account_id,
-        "devin_primary_org_id": auth.devin_primary_org_id.clone(),
-        "api_key": api_key,
-        "user_id": user_id,
-        "team_id": team_id,
-        "plan_name": plan_name,
-        "auth_provider": "auth1",
-        "status": "active",
-        "raw_user_info": user_info,
+    let available_orgs = post_auth.orgs.clone();
+    let mut target_orgs = if !user_specified_org.is_empty() {
+        vec![
+            available_orgs
+                .iter()
+                .find(|org| org.id == user_specified_org)
+                .cloned()
+                .unwrap_or_else(|| WindsurfOrg {
+                    id: user_specified_org.clone(),
+                    name: String::new(),
+                }),
+        ]
+    } else if !available_orgs.is_empty() {
+        available_orgs.clone()
+    } else if !selected_org_id.is_empty() {
+        vec![WindsurfOrg {
+            id: selected_org_id.clone(),
+            name: String::new(),
+        }]
+    } else {
+        Vec::new()
+    };
+    if target_orgs.is_empty() {
+        target_orgs.push(WindsurfOrg {
+            id: auth.devin_primary_org_id.clone().unwrap_or_default(),
+            name: String::new(),
+        });
+    }
+
+    let base_name = if name.is_empty() {
+        email.split('@').next().unwrap_or("").to_string()
+    } else {
+        name.clone()
+    };
+    let multiple_orgs = target_orgs
+        .iter()
+        .filter(|org| !org.id.trim().is_empty())
+        .count()
+        > 1;
+    let mut errors = Vec::new();
+    let mut org_results = Vec::new();
+    let mut org_join_set = JoinSet::new();
+
+    for org in target_orgs.clone() {
+        let target_org_id = org.id.trim().to_string();
+        if !target_org_id.is_empty() && Some(target_org_id.clone()) != auth.devin_primary_org_id {
+            let effective_auth1_token = effective_auth1_token.clone();
+            org_join_set.spawn(async move {
+                let result =
+                    windsurf_post_auth_internal(&effective_auth1_token, &target_org_id).await;
+                (org, target_org_id, result)
+            });
+        } else {
+            org_results.push((org, target_org_id, Ok(post_auth.clone())));
+        }
+    }
+
+    while let Some(joined) = org_join_set.join_next().await {
+        match joined {
+            Ok(result) => org_results.push(result),
+            Err(e) => errors.push(format!("组织 session 并发任务失败: {}", e)),
+        }
+    }
+
+    org_results.sort_by_key(|(org, target_org_id, _)| {
+        target_orgs
+            .iter()
+            .position(|item| item.id == org.id)
+            .unwrap_or_else(|| {
+                target_orgs
+                    .iter()
+                    .position(|item| item.id.trim() == target_org_id)
+                    .unwrap_or(target_orgs.len())
+            })
     });
+
+    let mut accounts = Vec::new();
+    for (org, target_org_id, org_post_auth_result) in org_results {
+        let org_post_auth = match org_post_auth_result {
+            Ok(v) => v,
+            Err(e) => {
+                errors.push(format!(
+                    "org={} 换取 session_token 失败: {}",
+                    target_org_id, e
+                ));
+                continue;
+            }
+        };
+        let org_session_token = if org_post_auth.session_token.is_empty() {
+            post_auth.session_token.clone()
+        } else {
+            org_post_auth.session_token.clone()
+        };
+        if org_session_token.is_empty() {
+            errors.push(format!("org={} 响应缺少 session_token 字段", target_org_id));
+            continue;
+        }
+        let org_name = org.name;
+        let org_display_name = if org_name.trim().is_empty() {
+            target_org_id.clone()
+        } else {
+            org_name.clone()
+        };
+        let display_name = if multiple_orgs && !org_display_name.is_empty() {
+            format!("{} ({})", base_name, org_display_name)
+        } else {
+            base_name.clone()
+        };
+        let primary_org_id = if target_org_id.is_empty() {
+            org_post_auth
+                .primary_org_id
+                .clone()
+                .or_else(|| auth.devin_primary_org_id.clone())
+        } else {
+            Some(target_org_id.clone())
+        };
+        accounts.push(serde_json::json!({
+            "email": email.clone(),
+            "name": display_name,
+            "auth_token": effective_auth1_token.clone(),
+            "session_token": org_session_token,
+            "devin_account_id": org_post_auth.account_id.clone().or_else(|| post_auth.account_id.clone()),
+            "devin_primary_org_id": primary_org_id,
+            "devin_org_name": org_name,
+            "devin_org_display_name": org_display_name,
+            "api_key": api_key.clone(),
+            "user_id": user_id.clone(),
+            "team_id": team_id.clone(),
+            "plan_name": plan_name.clone(),
+            "auth_provider": "auth1",
+            "status": "active",
+            "raw_user_info": user_info.clone(),
+        }));
+    }
+
+    if accounts.is_empty() {
+        return Ok(AddAccountByAuth1TokenResult {
+            success: false,
+            error: Some(if errors.is_empty() {
+                "未找到可导入的组织".to_string()
+            } else {
+                errors.join("; ")
+            }),
+            errors,
+            total_orgs: target_orgs.len(),
+            ..Default::default()
+        });
+    }
 
     Ok(AddAccountByAuth1TokenResult {
         success: true,
         requires_org_selection: false,
-        orgs: post_auth.orgs,
+        orgs: available_orgs,
         auth1_token: Some(effective_auth1_token),
-        account: Some(account_json),
+        account: accounts.first().cloned(),
+        accounts_created: accounts.len(),
+        accounts_error: errors.len(),
+        total_orgs: target_orgs.len(),
+        accounts,
+        errors,
         ..Default::default()
     })
 }
@@ -4853,4 +5059,76 @@ pub async fn restore_seamless_patch(
             format!("补丁已还原，{} 未运行无需重启", windsurf_process_name(&client_type))
         },
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decode_string_fields(bytes: &[u8]) -> Vec<(u32, String)> {
+        let mut out = Vec::new();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            let (tag, consumed) = decode_protobuf_varint(bytes, i).unwrap();
+            i += consumed;
+            let field_no = (tag >> 3) as u32;
+            let wire_type = (tag & 0x7) as u8;
+            assert_eq!(wire_type, 2);
+            let (len, len_consumed) = decode_protobuf_varint(bytes, i).unwrap();
+            i += len_consumed;
+            let end = i + len as usize;
+            out.push((
+                field_no,
+                String::from_utf8_lossy(&bytes[i..end]).into_owned(),
+            ));
+            i = end;
+        }
+        out
+    }
+
+    fn append_message_field(buf: &mut Vec<u8>, field_num: u8, value: &[u8]) {
+        buf.push((field_num << 3) | 2);
+        encode_protobuf_varint(value.len(), buf);
+        buf.extend_from_slice(value);
+    }
+
+    fn org_message(id: &str, name: &str) -> Vec<u8> {
+        let mut org = Vec::new();
+        append_protobuf_string_field(&mut org, 1, id);
+        append_protobuf_string_field(&mut org, 2, name);
+        org
+    }
+
+    #[test]
+    fn parses_post_auth_response_with_only_orgs() {
+        let mut body = Vec::new();
+        append_message_field(&mut body, 2, &org_message("org-a", "Org A"));
+        append_message_field(&mut body, 2, &org_message("org-b", "Org B"));
+
+        let parsed = parse_windsurf_post_auth_response(&body).unwrap();
+
+        assert!(parsed.session_token.is_empty());
+        assert_eq!(parsed.orgs.len(), 2);
+        assert_eq!(parsed.orgs[0].id, "org-a");
+        assert_eq!(parsed.orgs[1].name, "Org B");
+    }
+
+    #[test]
+    fn rejects_post_auth_response_without_session_or_orgs() {
+        let err = parse_windsurf_post_auth_response(&[]).unwrap_err();
+
+        assert!(err.contains("session_token"));
+    }
+
+    #[test]
+    fn encodes_post_auth_request_with_auth1_and_optional_org() {
+        let mut body = Vec::new();
+        append_protobuf_string_field(&mut body, 1, "auth1_token");
+        append_protobuf_string_field(&mut body, 2, "org-id");
+
+        let fields = decode_string_fields(&body);
+
+        assert_eq!(fields[0], (1, "auth1_token".to_string()));
+        assert_eq!(fields[1], (2, "org-id".to_string()));
+    }
 }

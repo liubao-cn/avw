@@ -154,7 +154,7 @@ const fullName = computed(() => {
   const first = props.account.first_name || ''
   const last = props.account.last_name || ''
   const name = `${first} ${last}`.trim()
-  return name || ''
+  return name || props.account.name || ''
 })
 
 const expireInfo = computed(() => {

@@ -233,6 +233,22 @@ pub async fn windsurf_auto_switch_update_snapshot(
 pub async fn windsurf_auto_switch_request_check(
     state: State<'_, AutoSwitchState>,
 ) -> Result<AutoSwitchStatus, String> {
+    let enabled = state
+        .snapshot
+        .lock()
+        .map_err(|_| "自动切号状态锁异常".to_string())?
+        .config
+        .enabled;
+    if !enabled {
+        {
+            let mut runtime = state
+                .runtime
+                .lock()
+                .map_err(|_| "自动切号运行态锁异常".to_string())?;
+            runtime.message = "自动切号未开启".to_string();
+        }
+        return Ok(build_status(&state));
+    }
     {
         let mut runtime = state
             .runtime
@@ -917,18 +933,28 @@ fn failed_until(app: &AppHandle, email: &str) -> i64 {
 }
 
 fn quota_decision(account: &AutoSwitchAccount, config: &AutoSwitchConfig) -> QuotaDecision {
+    let normal_remaining = normal_credit_remaining(account);
     let daily = account
         .daily_quota_remaining_percent
         .map(|v| v.clamp(0, 100));
     let weekly = account
         .weekly_quota_remaining_percent
         .map(|v| v.clamp(0, 100));
-    if daily.is_none() && weekly.is_none() {
+    if normal_remaining.is_none() && daily.is_none() && weekly.is_none() {
         return QuotaDecision {
             has_signal: false,
             should_switch: false,
             reason: String::new(),
         };
+    }
+    if let Some(value) = normal_remaining {
+        if value <= 0 {
+            return QuotaDecision {
+                has_signal: true,
+                should_switch: true,
+                reason: "普通额度已用完".to_string(),
+            };
+        }
     }
     if let Some(value) = daily {
         if value <= config.daily_threshold_percent {
@@ -955,6 +981,17 @@ fn quota_decision(account: &AutoSwitchAccount, config: &AutoSwitchConfig) -> Quo
     }
 }
 
+fn normal_credit_remaining(account: &AutoSwitchAccount) -> Option<i64> {
+    if let Some(value) = account.available_prompt_credits {
+        return Some(value);
+    }
+    match (account.total_credits, account.used_credits) {
+        (Some(total), Some(used)) => Some(total - used),
+        (Some(total), None) => Some(total),
+        _ => None,
+    }
+}
+
 struct QuotaDecision {
     has_signal: bool,
     should_switch: bool,
@@ -963,7 +1000,19 @@ struct QuotaDecision {
 
 fn quota_signature(account: &AutoSwitchAccount) -> String {
     format!(
-        "{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}",
+        account
+            .available_prompt_credits
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
+        account
+            .total_credits
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
+        account
+            .used_credits
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
         account
             .daily_quota_remaining_percent
             .map(|v| v.to_string())
@@ -981,6 +1030,36 @@ fn quota_signature(account: &AutoSwitchAccount) -> String {
             .map(|v| v.to_string())
             .unwrap_or_default(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn switches_when_normal_credits_are_exhausted() {
+        let account = AutoSwitchAccount {
+            available_prompt_credits: Some(0),
+            daily_quota_remaining_percent: Some(100),
+            weekly_quota_remaining_percent: Some(100),
+            ..Default::default()
+        };
+        let decision = quota_decision(&account, &AutoSwitchConfig::default());
+        assert!(decision.has_signal);
+        assert!(decision.should_switch);
+        assert_eq!(decision.reason, "普通额度已用完");
+    }
+
+    #[test]
+    fn treats_positive_normal_credits_as_enough_without_percent_quota() {
+        let account = AutoSwitchAccount {
+            available_prompt_credits: Some(100),
+            ..Default::default()
+        };
+        let decision = quota_decision(&account, &AutoSwitchConfig::default());
+        assert!(decision.has_signal);
+        assert!(!decision.should_switch);
+    }
 }
 
 fn is_free_account(account: &AutoSwitchAccount) -> bool {

@@ -40,7 +40,7 @@
               <span class="auto-switch-dot"></span>
               <span>{{ autoSwitchRuntime.message || $t('windsurf.autoSwitchIdle') }}</span>
             </div>
-            <button class="select-btn" type="button" :disabled="autoSwitchRuntime.busy" @click="requestAutoSwitchCheck">
+            <button class="select-btn" type="button" :disabled="!autoSwitchConfig.enabled || autoSwitchRuntime.busy" @click="requestAutoSwitchCheck">
               {{ $t('windsurf.autoSwitchCheckNow') }}
             </button>
           </div>
@@ -117,6 +117,41 @@
               </div>
 
               <button
+                :class="['filter-chip', { active: fullQuotaOnly }]"
+                type="button"
+                @click="fullQuotaOnly = !fullQuotaOnly"
+              >
+                {{ $t('windsurf.fullQuotaFilter') }} ({{ fullQuotaAccountsCount }})
+              </button>
+
+              <div class="session-copy-actions">
+                <button
+                  class="select-btn"
+                  type="button"
+                  :disabled="filteredCopyableAccounts.length === 0"
+                  @click="selectFilteredSessionAccounts"
+                >
+                  {{ $t('windsurf.selectFilteredSessions') }}
+                </button>
+                <button
+                  class="select-btn"
+                  type="button"
+                  :disabled="selectedForSessionCopy.length === 0"
+                  @click="clearSessionCopySelection"
+                >
+                  {{ $t('windsurf.clearSessionSelection') }}
+                </button>
+                <button
+                  class="select-btn primary-copy"
+                  type="button"
+                  :disabled="selectedSessionCount === 0"
+                  @click="copySelectedDevinSessions"
+                >
+                  {{ $t('windsurf.copySelectedSessions', { count: selectedSessionCount }) }}
+                </button>
+              </div>
+
+              <button
                 @click="locateCurrentLoginAccount"
                 class="btn locate-account-btn small"
                 :disabled="locatingCurrentAccount || accounts.length === 0"
@@ -129,10 +164,17 @@
                 {{ locatingCurrentAccount ? $t('windsurf.locatingCurrentAccount') : $t('windsurf.locateCurrentAccount') }}
               </button>
 
-              <button @click="showBatchDeleteDialog = true" class="batch-delete-icon-btn" :disabled="accounts.length === 0" :title="$t('windsurf.batchDelete')">
+              <button
+                @click="handleDeleteEntry"
+                class="batch-delete-icon-btn"
+                :class="{ 'has-selection': selectedDeletionCount > 0 }"
+                :disabled="accounts.length === 0"
+                :title="selectedDeletionCount > 0 ? $t('windsurf.deleteSelected', { count: selectedDeletionCount }) : $t('windsurf.batchDelete')"
+              >
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
                 </svg>
+                <span v-if="selectedDeletionCount > 0" class="batch-delete-badge">{{ selectedDeletionCount }}</span>
               </button>
 
               <span class="account-count">{{ filteredAccounts.length }} / {{ accounts.length }}</span>
@@ -147,6 +189,7 @@
                   :is-current-login="isCurrentLoginAccount(account)"
                   :highlight-current-login="isHighlightedCurrentLoginAccount(account)"
                   :data-account-email="normalizeEmail(account.email)"
+                  :data-account-key="accountStableKey(account)"
                   @refresh-account="handleRefreshAccount"
                   @switch-account="handleSwitchAccount"
                   @delete-local="handleDeleteLocal"
@@ -251,19 +294,23 @@
 
     <Teleport to="body">
       <Transition name="modal" appear>
-        <div v-if="showDeleteConfirm" class="import-overlay" @click="showDeleteConfirm = false">
+        <div v-if="showDeleteConfirm" class="import-overlay" @click="closeDeleteConfirm">
           <div class="import-dialog" @click.stop style="max-width: 380px;">
             <div class="dialog-header">
               <h3>{{ $t('windsurf.deleteLocal') }}</h3>
-              <button @click="showDeleteConfirm = false" class="dialog-close">×</button>
+              <button @click="closeDeleteConfirm" class="dialog-close">×</button>
             </div>
 
             <div class="dialog-body">
-              <p class="dialog-message">{{ $t('windsurf.deleteLocalConfirm') }}</p>
+              <p class="dialog-message">
+                {{ deleteSelectionMode === 'selected'
+                  ? $t('windsurf.deleteSelectedConfirm', { count: selectedDeletionCount })
+                  : $t('windsurf.deleteLocalConfirm') }}
+              </p>
             </div>
 
             <div class="dialog-footer">
-              <button @click="showDeleteConfirm = false" class="btn-cancel" :disabled="isDeleting">
+              <button @click="closeDeleteConfirm" class="btn-cancel" :disabled="isDeleting">
                 {{ $t('common.cancel') }}
               </button>
               <button @click="confirmDelete" class="btn-confirm" style="background: #ef4444;" :disabled="isDeleting">
@@ -320,8 +367,8 @@
                   <button @click="deselectAllForDelete" class="select-btn">{{ $t('windsurf.deselectAll') }}</button>
                 </div>
                 <div class="manual-list">
-                  <label v-for="account in accounts" :key="account.id || account.email" class="manual-item">
-                    <input type="checkbox" :value="account.email" v-model="selectedForBatchDelete" />
+                  <label v-for="account in accounts" :key="accountStableKey(account)" class="manual-item">
+                    <input type="checkbox" :value="accountStableKey(account)" v-model="selectedForBatchDelete" />
                     <span class="account-email">{{ account.email }}</span>
                     <span v-if="isFreeAccount(account)" class="tag free">{{ $t('windsurf.freeAccount') }}</span>
                     <span v-if="isNoCredits(account)" class="tag no-credits">{{ $t('windsurf.noCredits') }}</span>
@@ -506,11 +553,14 @@ const orgPickerResolver = ref(null)
 
 const showDeleteConfirm = ref(false)
 const deleteTargetAccount = ref(null)
+const deleteSelectionMode = ref('single')
 const isDeleting = ref(false)
 
 const sortType = ref('expiry')
 const sortOrder = ref('asc')
 const showSortMenu = ref(false)
+const fullQuotaOnly = ref(false)
+const selectedForSessionCopy = ref([])
 
 const showAnalyticsDialog = ref(false)
 const analyticsAccount = ref(null)
@@ -526,40 +576,24 @@ const selectedForBatchDelete = ref([])
 const showAutoSwitchDialog = ref(false)
 const autoSwitchConfig = ref(loadAutoSwitchConfig())
 const autoSwitchDraft = ref({ ...autoSwitchConfig.value })
-const autoSwitchTimer = ref(null)
-const autoSwitchTimerMeta = ref({ dueAt: 0, lightProbe: false })
 const autoSwitchRuntime = ref({
   busy: false,
   idle: false,
   unchangedChecks: 0,
-  lastQuotaSignature: '',
   cooldownUntil: 0,
   message: '',
   lastCheckAt: null,
   lastSwitchAt: null,
   lastActivityWakeAt: null,
-  lastFullIdleCheckAt: 0,
   nextDueAt: 0,
 })
 
 const CACHE_KEY = 'windsurf_accounts_cache_v1'
-const AUTO_SWITCH_VERIFY_TIMEOUT_MS = 15000
-const AUTO_SWITCH_VERIFY_POLL_MS = 1000
-const AUTO_SWITCH_MAX_ATTEMPTS = 3
-const AUTO_SWITCH_FAILURE_BASE_MS = 60000
-const AUTO_SWITCH_FAILURE_MAX_MS = 900000
-const AUTO_SWITCH_ACTIVITY_WAKE_THROTTLE_MS = 60000
-const AUTO_SWITCH_ACTIVITY_WAKE_DELAY_SECONDS = 5
-const AUTO_SWITCH_ACTIVITY_WAKE_SKIP_WITHIN_SECONDS = 15
-const AUTO_SWITCH_IDLE_FRONTMOST_PROBE_SECONDS = 30
-const AUTO_SWITCH_COOLDOWN_FRONTMOST_PROBE_SECONDS = 15
 const SWITCH_ACCOUNT_MAX_ATTEMPTS = 2
 const SWITCH_ACCOUNT_RETRY_DELAY_MS = 800
 const SWITCH_ACCOUNT_VERIFY_DELAY_MS = 1500
 
 const toast = ref({ show: false, message: '', type: 'success' })
-const autoSwitchFailedUntil = new Map()
-const autoSwitchFailedCount = new Map()
 
 const showToast = (message, type = 'success') => {
   toast.value = { show: true, message, type }
@@ -611,9 +645,37 @@ const tokenImportConfirmText = computed(() => {
 })
 
 const isNoCredits = (account) => {
-  const total = account.total_credits ?? 0
-  const used = account.used_credits ?? 0
-  return (total - used) <= 0
+  const remaining = getNormalCreditRemaining(account)
+  return remaining !== null && remaining <= 0
+}
+
+const normalizeQuotaPercent = (value) => {
+  const pct = Number(value)
+  if (!Number.isFinite(pct)) return null
+  return Math.max(0, Math.min(100, Math.round(pct)))
+}
+
+const isFullQuotaAccount = (account) => {
+  return normalizeQuotaPercent(account?.daily_quota_remaining_percent) === 100 &&
+    normalizeQuotaPercent(account?.weekly_quota_remaining_percent) === 100
+}
+
+const getDevinSessionToken = (account) => {
+  const sessionToken = String(account?.session_token || '').trim()
+  if (isDevinSessionToken(sessionToken)) return sessionToken
+  const authToken = String(account?.auth_token || '').trim()
+  if (isDevinSessionToken(authToken)) return authToken
+  return ''
+}
+
+const getNormalCreditRemaining = (account) => {
+  const promptRemaining = Number(account?.available_prompt_credits)
+  if (Number.isFinite(promptRemaining)) return promptRemaining
+  const total = Number(account?.total_credits)
+  const used = Number(account?.used_credits)
+  if (Number.isFinite(total) && Number.isFinite(used)) return total - used
+  if (Number.isFinite(total)) return total
+  return null
 }
 
 const isFreeAccount = (account) => {
@@ -639,10 +701,13 @@ const isExpired = (account) => {
 const getAccountSearchText = (account) => {
   return [
     account?.email,
+    account?.name,
     account?.auth_token,
     account?.session_token,
+    account?.devin_primary_org_id,
+    account?.devin_org_name,
+    account?.devin_org_display_name,
     account?.plan_name,
-    account?.teams_tier,
     account?.teams_tier_name,
     account?.plan_type,
     account?.tier
@@ -661,25 +726,33 @@ const freeAccountsCount = computed(() => {
   return accounts.value.filter(a => isFreeAccount(a)).length
 })
 
+const fullQuotaAccountsCount = computed(() => {
+  return accounts.value.filter(a => isFullQuotaAccount(a)).length
+})
+
+const batchDeleteKeySet = () => {
+  const toDelete = new Set()
+  if (deleteNoCredits.value) {
+    accounts.value.filter(a => isNoCredits(a)).forEach(a => toDelete.add(accountStableKey(a)))
+  }
+  if (deleteExpiredAccounts.value) {
+    accounts.value.filter(a => isExpired(a)).forEach(a => toDelete.add(accountStableKey(a)))
+  }
+  if (deleteFreeAccounts.value) {
+    accounts.value.filter(a => isFreeAccount(a)).forEach(a => toDelete.add(accountStableKey(a)))
+  }
+  return toDelete
+}
+
 const batchToDeleteCount = computed(() => {
   if (batchDeleteMode.value === 'manual') {
     return selectedForBatchDelete.value.length
   }
-  const toDelete = new Set()
-  if (deleteNoCredits.value) {
-    accounts.value.filter(a => isNoCredits(a)).forEach(a => toDelete.add(a.email))
-  }
-  if (deleteExpiredAccounts.value) {
-    accounts.value.filter(a => isExpired(a)).forEach(a => toDelete.add(a.email))
-  }
-  if (deleteFreeAccounts.value) {
-    accounts.value.filter(a => isFreeAccount(a)).forEach(a => toDelete.add(a.email))
-  }
-  return toDelete.size
+  return batchDeleteKeySet().size
 })
 
 const selectAllForDelete = () => {
-  selectedForBatchDelete.value = accounts.value.map(a => a.email)
+  selectedForBatchDelete.value = accounts.value.map(accountStableKey)
 }
 
 const deselectAllForDelete = () => {
@@ -696,38 +769,23 @@ const closeBatchDeleteDialog = () => {
 }
 
 const executeBatchDelete = async () => {
-  let emailsToDelete = []
-  
-  if (batchDeleteMode.value === 'manual') {
-    emailsToDelete = [...selectedForBatchDelete.value]
-  } else {
-    const toDelete = new Set()
-    if (deleteNoCredits.value) {
-      accounts.value.filter(a => isNoCredits(a)).forEach(a => toDelete.add(a.email))
-    }
-    if (deleteExpiredAccounts.value) {
-      accounts.value.filter(a => isExpired(a)).forEach(a => toDelete.add(a.email))
-    }
-    if (deleteFreeAccounts.value) {
-      accounts.value.filter(a => isFreeAccount(a)).forEach(a => toDelete.add(a.email))
-    }
-    emailsToDelete = Array.from(toDelete)
-  }
+  const keysToDelete = batchDeleteMode.value === 'manual'
+    ? [...selectedForBatchDelete.value]
+    : Array.from(batchDeleteKeySet())
 
-  if (emailsToDelete.length === 0) return
+  if (keysToDelete.length === 0) return
 
   isBatchDeleting.value = true
   try {
     let successCount = 0
     let failCount = 0
 
-    for (const email of emailsToDelete) {
-      const account = accounts.value.find(a => a.email === email)
+    for (const key of keysToDelete) {
+      const account = accounts.value.find(a => accountStableKey(a) === key)
       if (!account) continue
 
       try {
-        const keyEmail = (email || '').toLowerCase().trim()
-        accounts.value = accounts.value.filter(a => (a.email || '').toLowerCase().trim() !== keyEmail)
+        accounts.value = accounts.value.filter(a => accountStableKey(a) !== key)
         successCount++
       } catch {
         failCount++
@@ -773,10 +831,63 @@ const sortedAccounts = computed(() => {
 })
 
 const filteredAccounts = computed(() => {
-  if (!searchQuery.value.trim()) return sortedAccounts.value
   const q = searchQuery.value.toLowerCase().trim()
-  return sortedAccounts.value.filter(a => getAccountSearchText(a).includes(q))
+  return sortedAccounts.value.filter(a => {
+    if (fullQuotaOnly.value && !isFullQuotaAccount(a)) return false
+    if (q && !getAccountSearchText(a).includes(q)) return false
+    return true
+  })
 })
+
+const filteredCopyableAccounts = computed(() => filteredAccounts.value.filter(a => getDevinSessionToken(a)))
+
+const selectedSessionTokens = computed(() => {
+  const selected = new Set(selectedForSessionCopy.value)
+  const seen = new Set()
+  const tokens = []
+  for (const account of accounts.value) {
+    if (!selected.has(accountStableKey(account))) continue
+    const token = getDevinSessionToken(account)
+    if (!token || seen.has(token)) continue
+    seen.add(token)
+    tokens.push(token)
+  }
+  return tokens
+})
+
+const selectedSessionCount = computed(() => selectedSessionTokens.value.length)
+
+const selectedDeletionCount = computed(() => {
+  const selected = new Set(selectedForSessionCopy.value)
+  if (selected.size === 0) return 0
+  let count = 0
+  for (const account of accounts.value) {
+    if (selected.has(accountStableKey(account))) count += 1
+  }
+  return count
+})
+
+const selectFilteredSessionAccounts = () => {
+  selectedForSessionCopy.value = filteredCopyableAccounts.value.map(accountStableKey)
+}
+
+const clearSessionCopySelection = () => {
+  selectedForSessionCopy.value = []
+}
+
+const copySelectedDevinSessions = async () => {
+  const text = selectedSessionTokens.value.join('\n')
+  if (!text) {
+    showToast(t('windsurf.noSessionTokenSelected'), 'warning')
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(text)
+    showToast(t('windsurf.sessionTokensCopied', { count: selectedSessionTokens.value.length }), 'success')
+  } catch {
+    showToast(t('windsurf.copyFailed'), 'error')
+  }
+}
 
 // 根据当前卡片数切换网格列定义：
 // - 只有 1 张时，限制最大宽度（不拉伸占满整行）
@@ -810,6 +921,40 @@ const saveCache = () => {
 }
 
 const normalizeEmail = (email) => String(email || '').trim().toLowerCase()
+const normalizeOrgId = (orgId) => String(orgId || '').trim()
+const normalizeKeyPart = (value) => String(value || '').trim()
+const isDevinSessionToken = (value) => String(value || '').trim().startsWith('devin-session-token$')
+const tokenFingerprint = (value) => {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  let hash = 0
+  for (let i = 0; i < text.length; i += 1) {
+    hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0
+  }
+  return `${text.length}:${text.slice(0, 18)}:${text.slice(-18)}:${Math.abs(hash)}`
+}
+
+const accountDedupeKey = (account) => {
+  const email = normalizeEmail(account?.email)
+  const orgId = normalizeOrgId(account?.devin_primary_org_id || account?.org_id)
+  if (orgId) return `${email}::org:${orgId}`
+  const authToken = String(account?.auth_token || '')
+  const sessionToken = String(account?.session_token || '')
+  const explicitSessionKey = isDevinSessionToken(authToken) ? tokenFingerprint(authToken) : ''
+  if (explicitSessionKey) return `${email}::session:${explicitSessionKey}`
+  const devinAccountId = normalizeKeyPart(account?.devin_account_id)
+  if (devinAccountId) return `${email}::account:${devinAccountId}`
+  const isDevinAccount = account?.auth_provider === 'auth1' || authToken.startsWith('auth1_') || isDevinSessionToken(authToken) || isDevinSessionToken(sessionToken)
+  if (isDevinAccount) {
+    const teamId = normalizeKeyPart(account?.team_id)
+    if (teamId) return `${email}::team:${teamId}`
+    const sessionKey = tokenFingerprint(sessionToken || authToken)
+    if (sessionKey) return `${email}::session:${sessionKey}`
+  }
+  return email
+}
+
+const accountStableKey = (account) => String(account?.id || accountDedupeKey(account))
 
 const isCurrentLoginAccount = (account) => {
   return Boolean(currentLoginEmail.value && normalizeEmail(account?.email) === currentLoginEmail.value)
@@ -818,34 +963,6 @@ const isCurrentLoginAccount = (account) => {
 const isHighlightedCurrentLoginAccount = (account) => {
   return Boolean(highlightedLoginEmail.value && normalizeEmail(account?.email) === highlightedLoginEmail.value)
 }
-
-const getQuotaPercent = (account, field) => {
-  const value = Number(account?.[field])
-  return Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : null
-}
-
-const quotaDecision = (account, config) => {
-  const daily = getQuotaPercent(account, 'daily_quota_remaining_percent')
-  const weekly = getQuotaPercent(account, 'weekly_quota_remaining_percent')
-  const hasSignal = daily !== null || weekly !== null
-  if (!hasSignal) {
-    return { hasSignal: false, shouldSwitch: false, reason: '' }
-  }
-  if (daily !== null && daily <= config.dailyThresholdPercent) {
-    return { hasSignal: true, shouldSwitch: true, reason: `${t('windsurf.dailyQuota')} ${daily}%` }
-  }
-  if (weekly !== null && weekly <= config.weeklyThresholdPercent) {
-    return { hasSignal: true, shouldSwitch: true, reason: `${t('windsurf.weeklyQuota')} ${weekly}%` }
-  }
-  return { hasSignal: true, shouldSwitch: false, reason: '' }
-}
-
-const quotaSignature = (account) => [
-  account?.daily_quota_remaining_percent ?? '',
-  account?.weekly_quota_remaining_percent ?? '',
-  account?.daily_quota_reset_at_unix ?? '',
-  account?.weekly_quota_reset_at_unix ?? '',
-].join('|')
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -895,8 +1012,8 @@ const scheduleAutoSwitchSnapshotSync = () => {
 
 const mergeAutoSwitchAccount = (updated) => {
   if (!updated || !updated.email) return null
-  const email = normalizeEmail(updated.email)
-  const existingIndex = accounts.value.findIndex(account => normalizeEmail(account.email) === email)
+  const key = accountDedupeKey(updated)
+  const existingIndex = accounts.value.findIndex(account => accountDedupeKey(account) === key)
   if (existingIndex >= 0) {
     const existing = accounts.value[existingIndex]
     const merged = normalizeLocalItem({ ...existing, ...updated })
@@ -934,43 +1051,6 @@ const setupAutoSwitchEventListener = async () => {
   })
 }
 
-const clearAutoSwitchTimer = () => {
-  if (autoSwitchTimer.value) {
-    clearTimeout(autoSwitchTimer.value)
-    autoSwitchTimer.value = null
-  }
-  autoSwitchTimerMeta.value = { dueAt: 0, lightProbe: false }
-}
-
-const scheduleAutoSwitch = (delaySeconds, { lightProbe = false } = {}) => {
-  clearAutoSwitchTimer()
-  const config = autoSwitchConfig.value
-  if (!config.enabled) return
-  const safeDelay = Math.max(1, Math.round(delaySeconds))
-  const timer = setTimeout(() => {
-    autoSwitchTick()
-  }, safeDelay * 1000)
-  autoSwitchTimer.value = timer
-  autoSwitchTimerMeta.value = {
-    dueAt: Date.now() + safeDelay * 1000,
-    lightProbe,
-  }
-}
-
-const markAutoSwitchFailure = (email) => {
-  const key = normalizeEmail(email)
-  const count = (autoSwitchFailedCount.get(key) || 0) + 1
-  autoSwitchFailedCount.set(key, count)
-  const retryMs = Math.min(AUTO_SWITCH_FAILURE_BASE_MS * Math.pow(2, Math.min(count - 1, 4)), AUTO_SWITCH_FAILURE_MAX_MS)
-  autoSwitchFailedUntil.set(key, Date.now() + retryMs)
-}
-
-const markAutoSwitchSuccess = (email) => {
-  const key = normalizeEmail(email)
-  autoSwitchFailedCount.delete(key)
-  autoSwitchFailedUntil.delete(key)
-}
-
 const applySeamlessPatchIfNeeded = async (config, { silent = true } = {}) => {
   if (!config.seamlessEnabled || !config.seamlessAutoApply) return true
   const target = buildInvokeTarget()
@@ -991,12 +1071,6 @@ const applySeamlessPatchIfNeeded = async (config, { silent = true } = {}) => {
     if (!silent) showToast(`${t('windsurf.seamlessAutoApplyFailed')}: ${e.message || e}`, 'error')
     return false
   }
-}
-
-const refreshAutoSwitchAccount = async (account) => {
-  const ok = await handleRefreshCredits(account, { silentSuccess: true, silentError: true })
-  if (!ok) return null
-  return account
 }
 
 const getCurrentLoginEmail = async () => {
@@ -1060,80 +1134,6 @@ const locateCurrentLoginAccount = async () => {
   } finally {
     locatingCurrentAccount.value = false
   }
-}
-
-const getWindsurfWindowStatus = async () => {
-  try {
-    const target = buildInvokeTarget()
-    const resp = await invoke('windsurf_get_window_status', {
-      windsurfTarget: target,
-      windsurf_target: target
-    })
-    return resp && typeof resp === 'object' ? resp : null
-  } catch {
-    return null
-  }
-}
-
-const wakeAutoSwitchFromWindsurfActivity = async ({ allowCooldown = false } = {}) => {
-  const config = autoSwitchConfig.value
-  if (!config.enabled || autoSwitchRuntime.value.busy) return false
-  const now = Date.now()
-  const inCooldown = now < autoSwitchRuntime.value.cooldownUntil
-  if (!autoSwitchRuntime.value.idle && !(allowCooldown && inCooldown)) return false
-  if (inCooldown && !allowCooldown) return false
-  const lastWake = autoSwitchRuntime.value.lastActivityWakeAt || 0
-  const throttleMs = allowCooldown ? AUTO_SWITCH_COOLDOWN_FRONTMOST_PROBE_SECONDS * 1000 : AUTO_SWITCH_ACTIVITY_WAKE_THROTTLE_MS
-  if (now - lastWake < throttleMs) return false
-  const status = await getWindsurfWindowStatus()
-  if (!status || !status.running || !status.frontmost) return false
-  if (autoSwitchTimerMeta.value.dueAt) {
-    const remainingSeconds = Math.ceil((autoSwitchTimerMeta.value.dueAt - now) / 1000)
-    if (remainingSeconds > 0 && remainingSeconds <= AUTO_SWITCH_ACTIVITY_WAKE_SKIP_WITHIN_SECONDS) return false
-  }
-  autoSwitchRuntime.value.lastActivityWakeAt = now
-  autoSwitchRuntime.value.cooldownUntil = 0
-  autoSwitchRuntime.value.idle = false
-  setAutoSwitchMessage(t('windsurf.autoSwitchActivityWake'))
-  scheduleAutoSwitch(AUTO_SWITCH_ACTIVITY_WAKE_DELAY_SECONDS)
-  return true
-}
-
-const currentAccountForAutoSwitch = async () => {
-  const currentEmail = await getCurrentLoginEmail()
-  if (currentEmail) {
-    const matched = accounts.value.find(acc => normalizeEmail(acc.email) === currentEmail)
-    if (matched) return matched
-  }
-  const lastEmail = loadLastSwitchEmail()
-  if (lastEmail) {
-    const matched = accounts.value.find(acc => normalizeEmail(acc.email) === lastEmail)
-    if (matched) return matched
-  }
-  return accounts.value.find(acc => acc.auth_token) || null
-}
-
-const updateAutoSwitchIdle = (account, config) => {
-  const signature = quotaSignature(account)
-  if (signature && signature === autoSwitchRuntime.value.lastQuotaSignature) {
-    autoSwitchRuntime.value.unchangedChecks += 1
-  } else {
-    autoSwitchRuntime.value.lastQuotaSignature = signature
-    autoSwitchRuntime.value.unchangedChecks = 0
-  }
-  autoSwitchRuntime.value.idle = autoSwitchRuntime.value.unchangedChecks >= config.idleAfterUnchangedChecks
-}
-
-const enterAutoSwitchCooldown = (seconds, message) => {
-  autoSwitchRuntime.value.cooldownUntil = Date.now() + Math.max(1, seconds) * 1000
-  setAutoSwitchMessage(message)
-}
-
-const switchAccountInternal = async (account, { silent = false } = {}) => {
-  const before = toast.value
-  const ok = await handleSwitchAccount(account, { autoTriggered: true })
-  if (silent) toast.value = before
-  return ok
 }
 
 const invokeSwitchAccount = async (account, windsurfTarget) => {
@@ -1207,192 +1207,7 @@ const switchAccountWithRetry = async (account) => {
   }
 }
 
-const verifyAutoSwitch = async (account, config) => {
-  const email = normalizeEmail(account.email)
-  const deadline = Date.now() + AUTO_SWITCH_VERIFY_TIMEOUT_MS
-  let lastReason = t('windsurf.autoSwitchVerifyTimeout')
-  while (Date.now() < deadline) {
-    await delay(AUTO_SWITCH_VERIFY_POLL_MS)
-    const currentEmail = await getCurrentLoginEmail()
-    if (currentEmail && currentEmail !== email) {
-      lastReason = t('windsurf.autoSwitchVerifyStillCurrent', { email: currentEmail })
-      continue
-    }
-    const refreshed = await refreshAutoSwitchAccount(account)
-    if (!refreshed) return { success: false, reason: t('windsurf.autoSwitchRefreshFailed') }
-    const decision = quotaDecision(refreshed, config)
-    if (!decision.hasSignal) return { success: false, reason: t('windsurf.autoSwitchNoQuotaSignal') }
-    if (decision.shouldSwitch) return { success: false, reason: decision.reason }
-    return { success: true }
-  }
-  return { success: false, reason: lastReason }
-}
-
-const trySwitchToNextAvailable = async (currentAccount, config, reason) => {
-  const currentEmail = normalizeEmail(currentAccount.email)
-  const hasCurrentAccount = accounts.value.some(acc => normalizeEmail(acc.email) === currentEmail)
-  if (!hasCurrentAccount || accounts.value.length < 2) {
-    enterAutoSwitchCooldown(config.allExhaustedCooldownSeconds, t('windsurf.autoSwitchNoCandidate'))
-    return false
-  }
-  const candidates = accounts.value
-    .map((account, index) => ({ account, index }))
-    .filter(({ account }) => {
-      const email = normalizeEmail(account.email)
-      if (!email || email === currentEmail || !account.auth_token) return false
-      if (isExpired(account) || isFreeAccount(account)) return false
-      return true
-    })
-    .sort((a, b) => {
-      const expiresComparison = getExpireTimestamp(a.account) - getExpireTimestamp(b.account)
-      return expiresComparison || a.index - b.index
-    })
-  let attempts = 0
-  let hasRetryableFailure = false
-  let lastFailure = ''
-  for (const { account: candidate } of candidates) {
-    const email = normalizeEmail(candidate.email)
-    const failedUntil = autoSwitchFailedUntil.get(email) || 0
-    if (failedUntil > Date.now()) {
-      hasRetryableFailure = true
-      continue
-    }
-    const refreshed = await refreshAutoSwitchAccount(candidate)
-    if (!refreshed) {
-      hasRetryableFailure = true
-      continue
-    }
-    const candidateDecision = quotaDecision(refreshed, config)
-    if (!candidateDecision.hasSignal) {
-      hasRetryableFailure = true
-      continue
-    }
-    if (candidateDecision.shouldSwitch) continue
-    if (attempts >= AUTO_SWITCH_MAX_ATTEMPTS) break
-    attempts += 1
-    await switchAccountInternal(refreshed, { silent: true })
-    const verified = await verifyAutoSwitch(refreshed, config)
-    if (!verified.success) {
-      markAutoSwitchFailure(email)
-      hasRetryableFailure = true
-      lastFailure = `${refreshed.email}: ${verified.reason || ''}`.trim()
-      continue
-    }
-    markAutoSwitchSuccess(email)
-    saveLastSwitchEmail(refreshed.email)
-    autoSwitchRuntime.value.lastSwitchAt = new Date().toISOString()
-    await revealCurrentLoginAccount(refreshed.email)
-    enterAutoSwitchCooldown(config.cooldownSeconds, t('windsurf.autoSwitchSwitched', { email: refreshed.email, reason }))
-    showToast(t('windsurf.autoSwitchSwitched', { email: refreshed.email, reason }), 'success')
-    return true
-  }
-  if (attempts > 0) {
-    enterAutoSwitchCooldown(config.allExhaustedCooldownSeconds, t('windsurf.autoSwitchManualRequired', { reason: lastFailure || reason }))
-    return false
-  }
-  if (hasRetryableFailure) {
-    enterAutoSwitchCooldown(config.cooldownSeconds, t('windsurf.autoSwitchDeferred'))
-    return false
-  }
-  enterAutoSwitchCooldown(config.allExhaustedCooldownSeconds, t('windsurf.autoSwitchNoCandidate'))
-  return false
-}
-
-const autoSwitchCheckOnce = async () => {
-  const config = autoSwitchConfig.value
-  if (!config.enabled) {
-    setAutoSwitchMessage(t('windsurf.autoSwitchDisabled'))
-    return
-  }
-  if (accounts.value.length === 0) {
-    setAutoSwitchMessage(t('windsurf.autoSwitchNoAccounts'))
-    return
-  }
-  const seamlessReady = await applySeamlessPatchIfNeeded(config, { silent: false })
-  if (!seamlessReady) {
-    setAutoSwitchMessage(t('windsurf.autoSwitchSeamlessRequired'))
-    autoSwitchConfig.value = saveAutoSwitchConfig({ ...config, enabled: false })
-    return
-  }
-  const now = Date.now()
-  if (now < autoSwitchRuntime.value.cooldownUntil) {
-    setAutoSwitchMessage(t('windsurf.autoSwitchCooling'))
-    return
-  }
-  const current = await currentAccountForAutoSwitch()
-  if (!current) {
-    setAutoSwitchMessage(t('windsurf.autoSwitchNoCurrent'))
-    return
-  }
-  autoSwitchRuntime.value.lastCheckAt = new Date().toISOString()
-  const refreshed = await refreshAutoSwitchAccount(current)
-  if (!refreshed) {
-    setAutoSwitchMessage(t('windsurf.autoSwitchRefreshFailed'))
-    return
-  }
-  saveLastSwitchEmail(refreshed.email)
-  updateAutoSwitchIdle(refreshed, config)
-  const decision = quotaDecision(refreshed, config)
-  if (!decision.hasSignal) {
-    setAutoSwitchMessage(t('windsurf.autoSwitchNoQuotaSignal'))
-    return
-  }
-  if (!decision.shouldSwitch) {
-    setAutoSwitchMessage(autoSwitchRuntime.value.idle ? t('windsurf.autoSwitchIdleMode') : t('windsurf.autoSwitchQuotaOk'))
-    return
-  }
-  autoSwitchRuntime.value.idle = false
-  autoSwitchRuntime.value.unchangedChecks = 0
-  await trySwitchToNextAvailable(refreshed, config, decision.reason)
-}
-
-const autoSwitchTick = async () => {
-  const lightProbe = !!autoSwitchTimerMeta.value.lightProbe
-  clearAutoSwitchTimer()
-  const config = autoSwitchConfig.value
-  if (!config.enabled || autoSwitchRuntime.value.busy) return
-  const now = Date.now()
-  const cooldownRemaining = Math.ceil((autoSwitchRuntime.value.cooldownUntil - now) / 1000)
-  if (lightProbe && cooldownRemaining > 0) {
-    const woke = await wakeAutoSwitchFromWindsurfActivity({ allowCooldown: true })
-    if (!woke) {
-      scheduleAutoSwitch(Math.min(AUTO_SWITCH_COOLDOWN_FRONTMOST_PROBE_SECONDS, cooldownRemaining), { lightProbe: true })
-    }
-    return
-  }
-  if (lightProbe && autoSwitchRuntime.value.idle) {
-    const woke = await wakeAutoSwitchFromWindsurfActivity()
-    if (!woke) {
-      const lastFullCheck = autoSwitchRuntime.value.lastFullIdleCheckAt || Date.now()
-      const fullCheckRemaining = Math.ceil((lastFullCheck + config.idleIntervalSeconds * 1000 - Date.now()) / 1000)
-      if (fullCheckRemaining <= 0) scheduleAutoSwitch(1)
-      else scheduleAutoSwitch(Math.min(AUTO_SWITCH_IDLE_FRONTMOST_PROBE_SECONDS, fullCheckRemaining), { lightProbe: true })
-    }
-    return
-  }
-  autoSwitchRuntime.value.busy = true
-  try {
-    await autoSwitchCheckOnce()
-  } catch (e) {
-    setAutoSwitchMessage(`${t('windsurf.autoSwitchCheckFailed')}: ${e.message || e}`)
-  } finally {
-    autoSwitchRuntime.value.busy = false
-    const latest = autoSwitchConfig.value
-    if (latest.enabled) {
-      const cooldownRemaining = Math.ceil((autoSwitchRuntime.value.cooldownUntil - Date.now()) / 1000)
-      if (cooldownRemaining > 0) {
-        scheduleAutoSwitch(Math.min(AUTO_SWITCH_COOLDOWN_FRONTMOST_PROBE_SECONDS, cooldownRemaining), { lightProbe: true })
-      }
-      else if (autoSwitchRuntime.value.idle) {
-        autoSwitchRuntime.value.lastFullIdleCheckAt = Date.now()
-        scheduleAutoSwitch(Math.min(AUTO_SWITCH_IDLE_FRONTMOST_PROBE_SECONDS, latest.idleIntervalSeconds), { lightProbe: true })
-      } else scheduleAutoSwitch(latest.intervalSeconds)
-    }
-  }
-}
-
 const startAutoSwitchService = async ({ immediate = false } = {}) => {
-  clearAutoSwitchTimer()
   autoSwitchConfig.value = loadAutoSwitchConfig()
   if (!autoSwitchConfig.value.enabled) {
     setAutoSwitchMessage(t('windsurf.autoSwitchDisabled'))
@@ -1412,17 +1227,15 @@ const startAutoSwitchService = async ({ immediate = false } = {}) => {
 }
 
 const stopAutoSwitchService = () => {
-  clearAutoSwitchTimer()
-  autoSwitchRuntime.value.busy = false
-  autoSwitchRuntime.value.idle = false
-  autoSwitchRuntime.value.unchangedChecks = 0
-  autoSwitchRuntime.value.cooldownUntil = 0
-  autoSwitchRuntime.value.lastFullIdleCheckAt = 0
   setAutoSwitchMessage(t('windsurf.autoSwitchDisabled'))
   syncAutoSwitchSnapshot()
 }
 
 const requestAutoSwitchCheck = async () => {
+  if (!autoSwitchConfig.value.enabled) {
+    setAutoSwitchMessage(t('windsurf.autoSwitchDisabled'))
+    return
+  }
   if (autoSwitchRuntime.value.busy) return
   try {
     const status = await invoke('windsurf_auto_switch_request_check')
@@ -1601,7 +1414,8 @@ const cancelOrgPicker = () => {
 const upsertAuth1Account = (payload) => {
   if (!payload || !payload.email) return null
   const email = String(payload.email).trim()
-  const existing = accounts.value.find(a => (a?.email || '').toLowerCase().trim() === email.toLowerCase())
+  const incomingKey = accountDedupeKey(payload)
+  const existing = accounts.value.find(a => accountDedupeKey(a) === incomingKey)
   const base = existing || {}
   const merged = normalizeLocalItem({
     id: base.id || `auth1-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -1618,6 +1432,8 @@ const upsertAuth1Account = (payload) => {
     session_token: payload.session_token || base.session_token || null,
     devin_account_id: payload.devin_account_id || base.devin_account_id || null,
     devin_primary_org_id: payload.devin_primary_org_id || base.devin_primary_org_id || null,
+    devin_org_name: payload.devin_org_name || base.devin_org_name || null,
+    devin_org_display_name: payload.devin_org_display_name || base.devin_org_display_name || null,
     auth_provider: 'auth1',
     user_name: base.user_name || null,
     ...pickCreditFields(base),
@@ -1635,6 +1451,17 @@ const upsertAuth1Account = (payload) => {
   // 注意：必须返回数组内元素（Vue 自动包装的 reactive 代理），
   // 直接返回 merged 会绕过响应式，导致后续属性修改不触发 UI 更新。
   return accounts.value[0]
+}
+
+const upsertAuth1AccountsFromResponse = (resp) => {
+  const payloads = Array.isArray(resp?.accounts) && resp.accounts.length > 0
+    ? resp.accounts
+    : (resp?.account ? [resp.account] : [])
+  return payloads.map(upsertAuth1Account).filter(Boolean)
+}
+
+const refreshImportedAccounts = async (imported) => {
+  await Promise.all(imported.map(acc => handleRefreshCredits(acc, { silentSuccess: true, silentError: true }).catch(() => false)))
 }
 
 // 通用批次并发：每次最多 batchSize 个同时执行，结果按原顺序返回
@@ -1723,20 +1550,18 @@ const executeAddAuth1 = async () => {
         return { token, label, status: 'needOrg', resp }
       }
 
-      if (resp && resp.success && resp.account) {
-        const acc = upsertAuth1Account(resp.account)
-        if (!acc) {
+      if (resp && resp.success && (resp.account || (Array.isArray(resp.accounts) && resp.accounts.length > 0))) {
+        const imported = upsertAuth1AccountsFromResponse(resp)
+        if (imported.length === 0) {
           bumpProgress()
-          return { token, label, status: 'error', error: '后端返回 success=true 但 account 解析失败' }
+          return { token, label, status: 'error', error: '后端返回 success=true 但 account/accounts 解析失败' }
         }
-        // 导入成功的账号立即并发刷新额度，不等整批完成
         try {
-          await handleRefreshCredits(acc, { silentSuccess: true, silentError: true })
+          await refreshImportedAccounts(imported)
         } catch {
-          // 刷新失败不影响导入计数，handleRefreshCredits 内部已处理错误
         }
         bumpProgress()
-        return { token, label, status: 'ok' }
+        return { token, label, status: 'ok', count: imported.length }
       }
 
       bumpProgress()
@@ -1746,7 +1571,7 @@ const executeAddAuth1 = async () => {
     // 阶段 B：串行处理需要选组织的 token（选完立即 add + refresh）
     for (const r of addResults) {
       if (r.status === 'ok') {
-        successCount++
+        successCount += r.count || 1
         continue
       }
       if (r.status === 'error') {
@@ -1775,17 +1600,16 @@ const executeAddAuth1 = async () => {
         continue
       }
 
-      if (finalResp && finalResp.success && finalResp.account) {
-        const acc = upsertAuth1Account(finalResp.account)
-        if (acc) {
-          successCount++
+      if (finalResp && finalResp.success && (finalResp.account || (Array.isArray(finalResp.accounts) && finalResp.accounts.length > 0))) {
+        const imported = upsertAuth1AccountsFromResponse(finalResp)
+        if (imported.length > 0) {
+          successCount += imported.length
           try {
-            await handleRefreshCredits(acc, { silentSuccess: true, silentError: true })
+            await refreshImportedAccounts(imported)
           } catch {
-            // 同上
           }
         } else {
-          recordFailure(r.label, r.token, '后端返回 success=true 但 account 解析失败')
+          recordFailure(r.label, r.token, '后端返回 success=true 但 account/accounts 解析失败')
         }
       } else {
         recordFailure(r.label, r.token, finalResp?.error || '未知错误（后端未返回 error 字段）')
@@ -1964,7 +1788,25 @@ const handleRefreshAccount = async (account) => {
 
 const handleDeleteLocal = (account) => {
   deleteTargetAccount.value = account
+  deleteSelectionMode.value = 'single'
   showDeleteConfirm.value = true
+}
+
+const handleDeleteEntry = () => {
+  if (selectedDeletionCount.value > 0) {
+    deleteSelectionMode.value = 'selected'
+    deleteTargetAccount.value = null
+    showDeleteConfirm.value = true
+  } else {
+    showBatchDeleteDialog.value = true
+  }
+}
+
+const closeDeleteConfirm = () => {
+  if (isDeleting.value) return
+  showDeleteConfirm.value = false
+  deleteTargetAccount.value = null
+  deleteSelectionMode.value = 'single'
 }
 
 const handleShowAnalytics = (account) => {
@@ -1983,17 +1825,23 @@ const closeAnalyticsDialog = () => {
 }
 
 const confirmDelete = async () => {
+  if (deleteSelectionMode.value === 'selected') {
+    await confirmDeleteSelectedAccounts()
+    return
+  }
+
   const account = deleteTargetAccount.value
   if (!account) return
 
   isDeleting.value = true
   try {
-    const keyEmail = (account?.email || '').toLowerCase().trim()
-    accounts.value = accounts.value.filter(a => (a.email || '').toLowerCase().trim() !== keyEmail)
+    const key = accountStableKey(account)
+    accounts.value = accounts.value.filter(a => accountStableKey(a) !== key)
     saveCache()
     showToast(t('windsurf.deleteLocalSuccess'), 'success')
     showDeleteConfirm.value = false
     deleteTargetAccount.value = null
+    deleteSelectionMode.value = 'single'
   } catch (e) {
     showToast(`${t('windsurf.deleteFailed')}: ${e.message || e}`, 'error')
   } finally {
@@ -2001,7 +1849,34 @@ const confirmDelete = async () => {
   }
 }
 
-const handleSwitchAccount = async (account, options = {}) => {
+const confirmDeleteSelectedAccounts = async () => {
+  const selectedKeys = new Set(selectedForSessionCopy.value)
+  if (selectedKeys.size === 0) {
+    showDeleteConfirm.value = false
+    deleteSelectionMode.value = 'single'
+    return
+  }
+
+  isDeleting.value = true
+  try {
+    const before = accounts.value.length
+    accounts.value = accounts.value.filter(a => !selectedKeys.has(accountStableKey(a)))
+    const removed = before - accounts.value.length
+    saveCache()
+    selectedForSessionCopy.value = []
+    showDeleteConfirm.value = false
+    deleteSelectionMode.value = 'single'
+    if (removed > 0) {
+      showToast(t('windsurf.batchDeleteSuccess', { count: removed }), 'success')
+    }
+  } catch (e) {
+    showToast(`${t('windsurf.batchDeleteFailed')}: ${e.message || e}`, 'error')
+  } finally {
+    isDeleting.value = false
+  }
+}
+
+const handleSwitchAccount = async (account) => {
   if (account.__loggingIn) return false
   account.__loggingIn = true
   try {
@@ -2024,13 +1899,7 @@ const handleSwitchAccount = async (account, options = {}) => {
       showToast(t('windsurf.switchSuccess'), 'success')
     }
     saveLastSwitchEmail(account.email)
-    if (!options.autoTriggered) {
-      await revealCurrentLoginAccount(account.email)
-    }
-    if (autoSwitchConfig.value.enabled && !options.autoTriggered) {
-      enterAutoSwitchCooldown(autoSwitchConfig.value.cooldownSeconds, t('windsurf.autoSwitchManualCooldown'))
-      scheduleAutoSwitch(Math.min(AUTO_SWITCH_COOLDOWN_FRONTMOST_PROBE_SECONDS, autoSwitchConfig.value.cooldownSeconds), { lightProbe: true })
-    }
+    await revealCurrentLoginAccount(account.email)
     return true
   } catch (e) {
     showToast(`${t('windsurf.switchFailed')}: ${e.message || e}`, 'error')
@@ -2093,7 +1962,7 @@ useEscToClose(() => showOrgPickerDialog.value, () => {
   if (!isOrgPickerConfirming.value) cancelOrgPicker()
 })
 useEscToClose(() => showDeleteConfirm.value, () => {
-  if (!isDeleting.value) showDeleteConfirm.value = false
+  closeDeleteConfirm()
 })
 useEscToClose(() => showBatchDeleteDialog.value, () => {
   if (!isBatchDeleting.value) closeBatchDeleteDialog()
@@ -2115,7 +1984,6 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside)
-  clearAutoSwitchTimer()
   if (autoSwitchSnapshotSyncTimer) clearTimeout(autoSwitchSnapshotSyncTimer)
   if (typeof unlistenAutoSwitchEvent === 'function') unlistenAutoSwitchEvent()
   if (currentLoginHighlightTimer) clearTimeout(currentLoginHighlightTimer)
@@ -2420,6 +2288,47 @@ onUnmounted(() => {
   font-size: 12px;
   opacity: 0.6;
   font-weight: 600;
+}
+
+.filter-chip {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid rgba(16, 185, 129, 0.28);
+  background: rgba(16, 185, 129, 0.08);
+  color: #047857;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.filter-chip.active {
+  background: #10b981;
+  border-color: #10b981;
+  color: #fff;
+}
+
+.session-copy-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.select-btn.primary-copy {
+  border-color: rgba(59, 130, 246, 0.32);
+  background: rgba(59, 130, 246, 0.1);
+  color: #2563eb;
+  font-weight: 700;
+}
+
+.select-btn.primary-copy:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.16);
+}
+
+.select-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .sort-wrapper {
@@ -2985,6 +2894,7 @@ onUnmounted(() => {
 }
 
 .batch-delete-icon-btn {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3002,9 +2912,30 @@ onUnmounted(() => {
   background: rgba(239, 68, 68, 0.1);
 }
 
+.batch-delete-icon-btn.has-selection {
+  background: rgba(239, 68, 68, 0.12);
+}
+
 .batch-delete-icon-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.batch-delete-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  pointer-events: none;
 }
 
 .delete-stats {
@@ -3301,6 +3232,24 @@ onUnmounted(() => {
 
 [data-theme='dark'] .select-btn:hover {
   background: rgba(148, 163, 184, 0.14);
+}
+
+[data-theme='dark'] .filter-chip {
+  border-color: rgba(45, 212, 191, 0.34);
+  background: rgba(45, 212, 191, 0.12);
+  color: #5eead4;
+}
+
+[data-theme='dark'] .filter-chip.active {
+  background: #14b8a6;
+  border-color: #14b8a6;
+  color: #f8fafc;
+}
+
+[data-theme='dark'] .select-btn.primary-copy {
+  border-color: rgba(96, 165, 250, 0.38);
+  background: rgba(96, 165, 250, 0.14);
+  color: #93c5fd;
 }
 
 [data-theme='dark'] .locate-account-btn {

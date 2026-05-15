@@ -1,6 +1,6 @@
 [package]
 name = "AVW"
-version = "1.5.9"
+version = "1.5.10"
 description = "Windsurf Manager - 用于管理 Windsurf 账号、Credits 与使用数据分析的桌面应用"
 authors = ["liubao-cn"]
 license = "MIT"

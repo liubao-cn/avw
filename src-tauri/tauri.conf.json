@@ -1,6 +1,6 @@
 {
   "productName": "AVW",
-  "version": "1.5.8",
+  "version": "1.5.9",
   "identifier": "cn.liubao.avw",
   "build": {
     "beforeDevCommand": "npm run dev",

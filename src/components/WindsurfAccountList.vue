@@ -165,10 +165,19 @@
               </button>
 
               <button
+                class="select-btn"
+                type="button"
+                :disabled="filteredAccounts.length === 0"
+                @click="toggleBatchSelectMode"
+              >
+                {{ batchSelectMode ? $t('windsurf.deselectAll') : $t('windsurf.selectAll') }}
+              </button>
+
+              <button
                 @click="handleDeleteEntry"
                 class="batch-delete-icon-btn"
                 :class="{ 'has-selection': selectedDeletionCount > 0 }"
-                :disabled="accounts.length === 0"
+                :disabled="accounts.length === 0 || (batchSelectMode && selectedDeletionCount === 0)"
                 :title="selectedDeletionCount > 0 ? $t('windsurf.deleteSelected', { count: selectedDeletionCount }) : $t('windsurf.batchDelete')"
               >
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
@@ -182,20 +191,31 @@
 
             <div class="account-grid-scroll">
               <div ref="accountGridRef" class="account-grid" :style="gridStyle">
-                <WindsurfAccountCard
+                <div
                   v-for="account in filteredAccounts"
-                  :key="account.id"
-                  :account="account"
-                  :is-current-login="isCurrentLoginAccount(account)"
-                  :highlight-current-login="isHighlightedCurrentLoginAccount(account)"
-                  :data-account-email="normalizeEmail(account.email)"
+                  :key="accountStableKey(account)"
+                  class="account-card-select-wrapper"
+                  :class="{ selected: isAccountSelectedForBatchDelete(account) }"
                   :data-account-key="accountStableKey(account)"
-                  @refresh-account="handleRefreshAccount"
-                  @switch-account="handleSwitchAccount"
-                  @delete-local="handleDeleteLocal"
-                  @show-analytics="handleShowAnalytics"
-                  @show-toast="showToast"
-                />
+                >
+                  <label v-if="batchSelectMode" class="account-card-checkbox" @click.stop>
+                    <input
+                      type="checkbox"
+                      :checked="isAccountSelectedForBatchDelete(account)"
+                      @change="toggleBatchDeleteAccount(account)"
+                    />
+                  </label>
+                  <WindsurfAccountCard
+                    :account="account"
+                    :is-current-login="isCurrentLoginAccount(account)"
+                    :highlight-current-login="isHighlightedCurrentLoginAccount(account)"
+                    @refresh-account="handleRefreshAccount"
+                    @switch-account="handleSwitchAccount"
+                    @delete-local="handleDeleteLocal"
+                    @show-analytics="handleShowAnalytics"
+                    @show-toast="showToast"
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -526,8 +546,8 @@ const isRefreshing = ref(false)
 const searchQuery = ref('')
 const accountGridRef = ref(null)
 const locatingCurrentAccount = ref(false)
-const currentLoginEmail = ref('')
-const highlightedLoginEmail = ref('')
+const currentLoginKey = ref('')
+const highlightedLoginKey = ref('')
 let currentLoginHighlightTimer = null
 let unlistenAutoSwitchEvent = null
 let autoSwitchSnapshotSyncTimer = null
@@ -568,6 +588,7 @@ const analyticsAccount = ref(null)
 const showBatchDeleteDialog = ref(false)
 const isBatchDeleting = ref(false)
 const batchDeleteMode = ref('condition')
+const batchSelectMode = ref(false)
 const deleteNoCredits = ref(false)
 const deleteExpiredAccounts = ref(false)
 const deleteFreeAccounts = ref(false)
@@ -766,6 +787,7 @@ const closeBatchDeleteDialog = () => {
   deleteExpiredAccounts.value = false
   deleteFreeAccounts.value = false
   selectedForBatchDelete.value = []
+  batchSelectMode.value = false
 }
 
 const executeBatchDelete = async () => {
@@ -858,7 +880,7 @@ const selectedSessionTokens = computed(() => {
 const selectedSessionCount = computed(() => selectedSessionTokens.value.length)
 
 const selectedDeletionCount = computed(() => {
-  const selected = new Set(selectedForSessionCopy.value)
+  const selected = new Set(selectedForBatchDelete.value)
   if (selected.size === 0) return 0
   let count = 0
   for (const account of accounts.value) {
@@ -866,6 +888,30 @@ const selectedDeletionCount = computed(() => {
   }
   return count
 })
+
+const isAccountSelectedForBatchDelete = (account) => {
+  return selectedForBatchDelete.value.includes(accountStableKey(account))
+}
+
+const toggleBatchDeleteAccount = (account) => {
+  const key = accountStableKey(account)
+  if (!key) return
+  if (selectedForBatchDelete.value.includes(key)) {
+    selectedForBatchDelete.value = selectedForBatchDelete.value.filter(item => item !== key)
+  } else {
+    selectedForBatchDelete.value = [...selectedForBatchDelete.value, key]
+  }
+}
+
+const toggleBatchSelectMode = () => {
+  if (batchSelectMode.value) {
+    batchSelectMode.value = false
+    selectedForBatchDelete.value = []
+    return
+  }
+  batchSelectMode.value = true
+  selectedForBatchDelete.value = filteredAccounts.value.map(accountStableKey)
+}
 
 const selectFilteredSessionAccounts = () => {
   selectedForSessionCopy.value = filteredCopyableAccounts.value.map(accountStableKey)
@@ -956,12 +1002,60 @@ const accountDedupeKey = (account) => {
 
 const accountStableKey = (account) => String(account?.id || accountDedupeKey(account))
 
+const buildLoginIdentity = (source) => {
+  if (!source) return null
+  const sessionToken = String(source.session_token || source.auth_token || '')
+  const sessionKey = normalizeKeyPart(source.sessionKey) || tokenFingerprint(sessionToken)
+  return {
+    email: normalizeEmail(source.email),
+    sessionKey,
+    accountId: normalizeKeyPart(source.accountId || source.devin_account_id),
+    orgId: normalizeOrgId(source.orgId || source.devin_primary_org_id || source.org_id),
+    teamId: normalizeKeyPart(source.teamId || source.team_id)
+  }
+}
+
+const accountSessionKeys = (account) => {
+  const keys = new Set()
+  const sessionKey = tokenFingerprint(account?.session_token)
+  if (sessionKey) keys.add(sessionKey)
+  if (isDevinSessionToken(account?.auth_token)) {
+    const authKey = tokenFingerprint(account.auth_token)
+    if (authKey) keys.add(authKey)
+  }
+  return keys
+}
+
+const accountMatchesLoginIdentity = (account, identity) => {
+  if (!account || !identity) return false
+  if (identity.sessionKey && accountSessionKeys(account).has(identity.sessionKey)) return true
+  if (identity.accountId && normalizeKeyPart(account.devin_account_id) === identity.accountId) return true
+  const sameEmail = !identity.email || normalizeEmail(account.email) === identity.email
+  if (sameEmail && identity.orgId && normalizeOrgId(account.devin_primary_org_id || account.org_id) === identity.orgId) return true
+  if (sameEmail && identity.teamId && normalizeKeyPart(account.team_id) === identity.teamId) return true
+  return false
+}
+
+const resolveLoginAccount = (identity) => {
+  if (!identity) return null
+  const strongMatches = accounts.value.filter(account => accountMatchesLoginIdentity(account, identity))
+  if (strongMatches.length === 1) return strongMatches[0]
+  if (!identity.email) return null
+  const emailMatches = accounts.value.filter(account => normalizeEmail(account.email) === identity.email)
+  if (emailMatches.length === 1) return emailMatches[0]
+  return null
+}
+
+const setCurrentLoginIdentity = (identity, matched = null) => {
+  currentLoginKey.value = matched ? accountStableKey(matched) : ''
+}
+
 const isCurrentLoginAccount = (account) => {
-  return Boolean(currentLoginEmail.value && normalizeEmail(account?.email) === currentLoginEmail.value)
+  return Boolean(currentLoginKey.value && accountStableKey(account) === currentLoginKey.value)
 }
 
 const isHighlightedCurrentLoginAccount = (account) => {
-  return Boolean(highlightedLoginEmail.value && normalizeEmail(account?.email) === highlightedLoginEmail.value)
+  return Boolean(highlightedLoginKey.value && accountStableKey(account) === highlightedLoginKey.value)
 }
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms))
@@ -1038,7 +1132,7 @@ const handleAutoSwitchEvent = async (event) => {
     const email = normalizeEmail(payload.email || payload.account?.email)
     if (email) {
       saveLastSwitchEmail(email)
-      await revealCurrentLoginAccount(email)
+      await revealCurrentLoginAccount({ ...payload.account, email })
     }
     if (payload.message) showToast(payload.message, 'success')
   }
@@ -1073,60 +1167,63 @@ const applySeamlessPatchIfNeeded = async (config, { silent = true } = {}) => {
   }
 }
 
-const getCurrentLoginEmail = async () => {
+const getCurrentLoginIdentity = async () => {
   try {
     const target = buildInvokeTarget()
     const resp = await invoke('windsurf_get_current_login', {
       windsurfTarget: target,
       windsurf_target: target
     })
-    if (resp && resp.success && resp.email) return normalizeEmail(resp.email)
+    if (resp && resp.success) return buildLoginIdentity(resp)
   } catch {
   }
-  return ''
+  return null
 }
 
-const scrollToCurrentLoginAccount = async (email) => {
+const scrollToCurrentLoginAccount = async (key) => {
   await nextTick()
   const grid = accountGridRef.value
-  const selector = `[data-account-email="${CSS.escape(email)}"]`
+  const selector = `[data-account-key="${CSS.escape(key)}"]`
   const card = grid?.querySelector?.(selector)
   if (!card) return false
   card.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' })
-  highlightedLoginEmail.value = email
+  highlightedLoginKey.value = key
   if (currentLoginHighlightTimer) clearTimeout(currentLoginHighlightTimer)
   currentLoginHighlightTimer = setTimeout(() => {
-    if (highlightedLoginEmail.value === email) highlightedLoginEmail.value = ''
+    if (highlightedLoginKey.value === key) highlightedLoginKey.value = ''
     currentLoginHighlightTimer = null
   }, 5000)
   return true
 }
 
-const revealCurrentLoginAccount = async (email) => {
-  const normalized = normalizeEmail(email)
-  if (!normalized) return false
-  currentLoginEmail.value = normalized
-  const visible = filteredAccounts.value.some(account => normalizeEmail(account.email) === normalized)
+const revealCurrentLoginAccount = async (source) => {
+  const identity = typeof source === 'string' ? buildLoginIdentity({ email: source }) : buildLoginIdentity(source)
+  const matched = resolveLoginAccount(identity)
+  setCurrentLoginIdentity(identity, matched)
+  if (!matched) return false
+  const key = accountStableKey(matched)
+  const visible = filteredAccounts.value.some(account => accountStableKey(account) === key)
   if (!visible) searchQuery.value = ''
-  return scrollToCurrentLoginAccount(normalized)
+  return scrollToCurrentLoginAccount(key)
 }
 
 const locateCurrentLoginAccount = async () => {
   if (locatingCurrentAccount.value) return
   locatingCurrentAccount.value = true
   try {
-    const email = await getCurrentLoginEmail()
-    currentLoginEmail.value = email
-    if (!email) {
+    const identity = await getCurrentLoginIdentity()
+    const email = identity?.email || ''
+    const matched = resolveLoginAccount(identity)
+    setCurrentLoginIdentity(identity, matched)
+    if (!identity || (!email && !identity.sessionKey && !identity.accountId)) {
       showToast(t('windsurf.currentLoginNotFound'), 'warning')
       return
     }
-    const matched = accounts.value.find(account => normalizeEmail(account.email) === email)
     if (!matched) {
       showToast(t('windsurf.currentLoginNotInList', { email }), 'warning')
       return
     }
-    const scrolled = await revealCurrentLoginAccount(email)
+    const scrolled = await revealCurrentLoginAccount(identity)
     if (scrolled) showToast(t('windsurf.currentLoginLocated', { email: matched.email || email }), 'success')
     else showToast(t('windsurf.currentLoginLocatedButHidden', { email: matched.email || email }), 'warning')
   } catch (e) {
@@ -1187,9 +1284,9 @@ const switchAccountWithRetry = async (account) => {
       if (resp && resp.success) {
         applySwitchAccountResponse(account, resp)
         await delay(SWITCH_ACCOUNT_VERIFY_DELAY_MS)
-        const currentEmail = await getCurrentLoginEmail()
-        if (!currentEmail || currentEmail === normalizeEmail(account.email)) return resp
-        lastError = t('windsurf.autoSwitchVerifyStillCurrent', { email: currentEmail })
+        const identity = await getCurrentLoginIdentity()
+        if (!identity || accountMatchesLoginIdentity(account, identity)) return resp
+        lastError = t('windsurf.autoSwitchVerifyStillCurrent', { email: identity.email || '' })
       } else {
         lastError = resp?.error || t('windsurf.switchFailed')
       }
@@ -1850,7 +1947,7 @@ const confirmDelete = async () => {
 }
 
 const confirmDeleteSelectedAccounts = async () => {
-  const selectedKeys = new Set(selectedForSessionCopy.value)
+  const selectedKeys = new Set(selectedForBatchDelete.value)
   if (selectedKeys.size === 0) {
     showDeleteConfirm.value = false
     deleteSelectionMode.value = 'single'
@@ -1863,7 +1960,8 @@ const confirmDeleteSelectedAccounts = async () => {
     accounts.value = accounts.value.filter(a => !selectedKeys.has(accountStableKey(a)))
     const removed = before - accounts.value.length
     saveCache()
-    selectedForSessionCopy.value = []
+    selectedForBatchDelete.value = []
+    batchSelectMode.value = false
     showDeleteConfirm.value = false
     deleteSelectionMode.value = 'single'
     if (removed > 0) {
@@ -1899,7 +1997,7 @@ const handleSwitchAccount = async (account) => {
       showToast(t('windsurf.switchSuccess'), 'success')
     }
     saveLastSwitchEmail(account.email)
-    await revealCurrentLoginAccount(account.email)
+    await revealCurrentLoginAccount(account)
     return true
   } catch (e) {
     showToast(`${t('windsurf.switchFailed')}: ${e.message || e}`, 'error')
@@ -2406,6 +2504,43 @@ onUnmounted(() => {
   display: grid;
   gap: 14px;
   justify-content: start;
+}
+
+.account-card-select-wrapper {
+  position: relative;
+  border-radius: 14px;
+  transition: box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.account-card-select-wrapper.selected {
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.62), 0 12px 28px rgba(59, 130, 246, 0.16);
+}
+
+.account-card-checkbox {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18);
+  cursor: pointer;
+}
+
+.account-card-checkbox input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary-color, #3b82f6);
+  cursor: pointer;
+}
+
+[data-theme='dark'] .account-card-checkbox {
+  background: rgba(30, 41, 59, 0.94);
 }
 
 @media (max-width: 960px) {

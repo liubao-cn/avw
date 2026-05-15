@@ -124,33 +124,6 @@
                 {{ $t('windsurf.fullQuotaFilter') }} ({{ fullQuotaAccountsCount }})
               </button>
 
-              <div class="session-copy-actions">
-                <button
-                  class="select-btn"
-                  type="button"
-                  :disabled="filteredCopyableAccounts.length === 0"
-                  @click="selectFilteredSessionAccounts"
-                >
-                  {{ $t('windsurf.selectFilteredSessions') }}
-                </button>
-                <button
-                  class="select-btn"
-                  type="button"
-                  :disabled="selectedForSessionCopy.length === 0"
-                  @click="clearSessionCopySelection"
-                >
-                  {{ $t('windsurf.clearSessionSelection') }}
-                </button>
-                <button
-                  class="select-btn primary-copy"
-                  type="button"
-                  :disabled="selectedSessionCount === 0"
-                  @click="copySelectedDevinSessions"
-                >
-                  {{ $t('windsurf.copySelectedSessions', { count: selectedSessionCount }) }}
-                </button>
-              </div>
-
               <button
                 @click="locateCurrentLoginAccount"
                 class="btn locate-account-btn small"
@@ -171,6 +144,15 @@
                 @click="toggleBatchSelectMode"
               >
                 {{ batchSelectMode ? $t('windsurf.deselectAll') : $t('windsurf.selectAll') }}
+              </button>
+
+              <button
+                class="select-btn primary-copy"
+                type="button"
+                :disabled="selectedSessionCount === 0"
+                @click="copySelectedDevinSessions"
+              >
+                {{ $t('windsurf.copySelectedSessions', { count: selectedSessionCount }) }}
               </button>
 
               <button
@@ -580,7 +562,6 @@ const sortType = ref('expiry')
 const sortOrder = ref('asc')
 const showSortMenu = ref(false)
 const fullQuotaOnly = ref(false)
-const selectedForSessionCopy = ref([])
 
 const showAnalyticsDialog = ref(false)
 const analyticsAccount = ref(null)
@@ -861,10 +842,8 @@ const filteredAccounts = computed(() => {
   })
 })
 
-const filteredCopyableAccounts = computed(() => filteredAccounts.value.filter(a => getDevinSessionToken(a)))
-
 const selectedSessionTokens = computed(() => {
-  const selected = new Set(selectedForSessionCopy.value)
+  const selected = new Set(selectedForBatchDelete.value)
   const seen = new Set()
   const tokens = []
   for (const account of accounts.value) {
@@ -911,14 +890,6 @@ const toggleBatchSelectMode = () => {
   }
   batchSelectMode.value = true
   selectedForBatchDelete.value = filteredAccounts.value.map(accountStableKey)
-}
-
-const selectFilteredSessionAccounts = () => {
-  selectedForSessionCopy.value = filteredCopyableAccounts.value.map(accountStableKey)
-}
-
-const clearSessionCopySelection = () => {
-  selectedForSessionCopy.value = []
 }
 
 const copySelectedDevinSessions = async () => {
@@ -2406,13 +2377,6 @@ onUnmounted(() => {
   color: #fff;
 }
 
-.session-copy-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
 .select-btn.primary-copy {
   border-color: rgba(59, 130, 246, 0.32);
   background: rgba(59, 130, 246, 0.1);
@@ -2508,12 +2472,32 @@ onUnmounted(() => {
 
 .account-card-select-wrapper {
   position: relative;
-  border-radius: 14px;
+  display: flex;
+  min-width: 0;
+  border-radius: 12px;
   transition: box-shadow 0.18s ease, transform 0.18s ease;
 }
 
+.account-card-select-wrapper :deep(.account-card) {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+}
+
 .account-card-select-wrapper.selected {
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.62), 0 12px 28px rgba(59, 130, 246, 0.16);
+  box-shadow: 0 12px 28px rgba(59, 130, 246, 0.18);
+}
+
+.account-card-select-wrapper.selected :deep(.account-card) {
+  border-color: #3b82f6;
+  border-style: solid;
+  box-shadow: 0 0 0 1px #3b82f6 inset, 0 12px 28px rgba(59, 130, 246, 0.14);
+  background:
+    linear-gradient(
+      180deg,
+      rgba(59, 130, 246, 0.1) 0%,
+      var(--card-bg, #fff) 60%
+    );
 }
 
 .account-card-checkbox {
@@ -2541,6 +2525,21 @@ onUnmounted(() => {
 
 [data-theme='dark'] .account-card-checkbox {
   background: rgba(30, 41, 59, 0.94);
+}
+
+[data-theme='dark'] .account-card-select-wrapper.selected {
+  box-shadow: 0 12px 28px rgba(59, 130, 246, 0.24);
+}
+
+[data-theme='dark'] .account-card-select-wrapper.selected :deep(.account-card) {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 1px #60a5fa inset, 0 12px 28px rgba(59, 130, 246, 0.22);
+  background:
+    linear-gradient(
+      180deg,
+      rgba(59, 130, 246, 0.16) 0%,
+      var(--color-surface, #1e293b) 60%
+    );
 }
 
 @media (max-width: 960px) {
@@ -2847,6 +2846,7 @@ onUnmounted(() => {
   border-radius: 8px;
   padding: 7px 9px;
   background: rgba(255, 255, 255, 0.88);
+  color: rgba(15, 23, 42, 0.92);
 }
 
 .auto-switch-advanced-toggle {
@@ -3311,23 +3311,43 @@ onUnmounted(() => {
 
 [data-theme='dark'] .auto-switch-banner {
   border-color: rgba(148, 163, 184, 0.24);
-  background: rgba(148, 163, 184, 0.1);
-  color: var(--color-text-secondary, #cbd5f5);
+  background: rgba(15, 23, 42, 0.72);
+  color: var(--color-text-primary, #e2e8f0);
 }
 
 [data-theme='dark'] .auto-switch-banner.enabled {
-  border-color: rgba(45, 212, 191, 0.28);
-  background: rgba(45, 212, 191, 0.1);
+  border-color: rgba(45, 212, 191, 0.42);
+  background: rgba(20, 184, 166, 0.16);
 }
 
 [data-theme='dark'] .auto-switch-grid label {
-  background: rgba(148, 163, 184, 0.1);
+  background: rgba(15, 23, 42, 0.52);
+  border: 1px solid rgba(148, 163, 184, 0.18);
   color: var(--color-text-primary, #e2e8f0);
 }
 
 [data-theme='dark'] .auto-switch-grid input {
-  background: var(--color-input-bg, rgba(15, 23, 42, 0.85));
-  border-color: var(--color-input-border, rgba(148, 163, 184, 0.35));
+  background: var(--color-input-bg, rgba(2, 6, 23, 0.72));
+  border-color: var(--color-input-border, rgba(148, 163, 184, 0.42));
+  color: var(--color-text-primary, #e2e8f0);
+}
+
+[data-theme='dark'] .auto-switch-grid input:disabled,
+[data-theme='dark'] .condition-item input:disabled + span {
+  color: var(--color-text-muted, #94a3b8);
+}
+
+[data-theme='dark'] .auto-switch-dialog .dialog-message {
+  color: var(--color-text-secondary, #cbd5e1);
+}
+
+[data-theme='dark'] .auto-switch-advanced-toggle {
+  color: #93c5fd;
+}
+
+[data-theme='dark'] .auto-switch-status-text {
+  background: rgba(59, 130, 246, 0.16);
+  border: 1px solid rgba(96, 165, 250, 0.28);
   color: var(--color-text-primary, #e2e8f0);
 }
 
